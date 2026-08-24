@@ -1,0 +1,832 @@
+//! Backend de la UI: tarea que ejecuta las operaciones de la capa de Aplicación
+//! en segundo plano (para no bloquear el renderizado) y devuelve eventos.
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+
+use crate::app::aggregator::MetadataAggregator;
+use crate::app::audio::{EventBus, PlaybackEvent, PlaybackState, PlaybackStatus};
+use crate::app::history::History;
+use crate::app::playback::PlaybackRouter;
+use crate::app::search::SearchEngine;
+use crate::app::thumbnail::ThumbnailService;
+use crate::domain::track::Track;
+use crate::infrastructure::config::{Config, ConfigForm};
+use crate::infrastructure::db::Db;
+use crate::infrastructure::playback;
+use crate::playback::{QueueManager, RecoveryAction, RecoveryBudget, decide_recovery};
+
+use super::event::BackendEvent;
+
+/// Comandos que la UI envía al backend.
+#[derive(Debug)]
+pub enum BackendCommand {
+    Search(String),
+    SaveTrack(Box<Track>),
+    SaveSettings(Box<ConfigForm>),
+    LoadHistory,
+    LoadListeningStats,
+    LoadSources,
+    LoadSettings,
+    /// Reproduce un track (resuelve el stream y lo delega al motor adecuado).
+    Play(Box<Track>),
+    Pause,
+    Resume,
+    Toggle,
+    Stop,
+    /// Busca una posición (en segundos).
+    Seek(u64),
+    /// Cambia el volumen (0-100).
+    Volume(u8),
+    /// Pide letra sincronizada (LRCLIB) y recomendados de un video.
+    LoadRelated(Box<Track>),
+    /// Resuelve y cachea la miniatura de un track (para mostrarla en la TUI).
+    Thumbnail(Box<Track>),
+    /// Activa/desactiva la reproducción automática de recomendaciones.
+    SetAutoplay(bool),
+    /// Actualiza la cola de recomendaciones usada por el autoplay.
+    SetAutoplayQueue(Vec<Track>),
+    /// Salta a la siguiente recomendación de la cola (Shift+D) y la reproduce.
+    NextTrack,
+    /// Salta a la anterior recomendación de la cola (Shift+A) y la reproduce.
+    PrevTrack,
+    // ----------------------------------------------------------- playlists
+    ListPlaylists,
+    CreatePlaylist(String),
+    RenamePlaylist(i64, String),
+    DeletePlaylist(i64),
+    PlaylistTracks(i64),
+    AddToPlaylist(i64, i64),
+    RemoveFromPlaylist(i64, i64),
+    SetArtworkOverride(i64, String),
+}
+
+/// Servicios de la capa de Aplicación usados por la TUI.
+///
+/// Es `Clone` (todo el estado mutable vive en `Arc`): así los comandos pesados
+/// (búsquedas, red, `Play`, playlists...) se ejecutan en tareas propias con un
+/// clon y el loop principal queda libre para los controles de reproducción,
+/// que se procesan en línea y de forma inmediata.
+#[derive(Clone)]
+pub struct Backend {
+    db: Db,
+    search: SearchEngine,
+    history: History,
+    config: Config,
+    http: reqwest::Client,
+    router: Arc<PlaybackRouter>,
+    /// Resolución de streams: caché → router de proveedores → política de
+    /// fallos. La lógica que antes vivía en `play_track*` vive ahora aquí.
+    resolver: Arc<crate::media::StreamResolver>,
+    /// Resuelve/cachea miniaturas de los tracks (descarga + decodificación).
+    thumbnails: Arc<ThumbnailService>,
+    /// Autoplay de recomendaciones: cuando un track termina, se reproduce la
+    /// siguiente de la cola.
+    autoplay: Arc<tokio::sync::Mutex<bool>>,
+    /// Cola formal de reproducción (navegación, shuffle, repeat). El backend
+    /// la mantiene estable entre canciones.
+    queue: Arc<tokio::sync::Mutex<QueueManager>>,
+    /// Track en curso (para recuperación en caliente).
+    current: Arc<tokio::sync::Mutex<Option<Track>>>,
+    /// Presupuesto de auto-recuperación: UN refresco de stream por track.
+    recovery_budget: Arc<tokio::sync::Mutex<RecoveryBudget>>,
+    /// Preparación anticipada del SIGUIENTE track (warm de caché).
+    preload: Arc<crate::playback::PreloadManager>,
+    /// Bus de features del análisis de audio (`None` si el flag está OFF).
+    features: Option<crate::analysis::FeatureBus>,
+}
+
+impl Backend {
+    /// `true` si hay que emitir eventos de features hacia la UI.
+    fn visuals_enabled(&self) -> bool {
+        self.config.flags.advanced_visualization && self.features.is_some()
+    }
+}
+
+impl Backend {
+    pub fn new(db: Db, config: Config) -> Self {
+        // Composición del subsistema media: un solo adaptador de YouTube
+        // compartido por catálogo, streaming y verificación; resolver con
+        // caché memoria+SQLite y política de fallos acotada. Los feature
+        // flags deciden si YouTube se registra (apagado ⇒ registros vacíos).
+        let composed = crate::api::compose_media(db.clone(), &config.flags);
+        let aggregator = Arc::new(MetadataAggregator::new(composed.catalog));
+        let http = config
+            .apply_proxy_policy(
+                reqwest::Client::builder()
+                    .user_agent("PlayFusion/0.1.0")
+                    .timeout(Duration::from_secs(30)),
+            )
+            .build()
+            .expect("cliente HTTP válido");
+
+        // Bus de eventos agrupado: todos los motores notifican aquí. El
+        // análisis de audio (si está habilitado) entrega además su bus de
+        // features para consumidores posteriores (visualización).
+        let (bus, joined) = EventBus::channel();
+        let (engine_config, features) = playback::build_engines(&config, bus, http.clone());
+        let router = Arc::new(PlaybackRouter::new(engine_config, joined));
+
+        let preload = Arc::new(crate::playback::PreloadManager::new(
+            composed.stream_resolver.clone(),
+            crate::playback::PreloadConfig::default(),
+        ));
+
+        Self {
+            search: SearchEngine::new(db.clone(), aggregator.clone()),
+            history: History::new(db.clone()),
+            thumbnails: Arc::new(ThumbnailService::new(http.clone(), aggregator)),
+            http,
+            db,
+            config,
+            router,
+            resolver: composed.stream_resolver,
+            autoplay: Arc::new(tokio::sync::Mutex::new(true)),
+            queue: Arc::new(tokio::sync::Mutex::new(QueueManager::default())),
+            current: Arc::new(tokio::sync::Mutex::new(None)),
+            recovery_budget: Arc::new(tokio::sync::Mutex::new(RecoveryBudget::default())),
+            preload,
+            features,
+        }
+    }
+
+    /// Último snapshot de features de audio, si el análisis está activo
+    /// (consumidores: visualización Fase 7, métricas).
+    pub fn features(&self) -> Option<&crate::analysis::FeatureBus> {
+        self.features.as_ref()
+    }
+
+    /// Reconstruye el agregador de proveedores a partir de la configuración actual.
+    fn rebuild_providers(&mut self) {
+        let composed = crate::api::compose_media(self.db.clone(), &self.config.flags);
+        let aggregator = Arc::new(MetadataAggregator::new(composed.catalog));
+        self.search = SearchEngine::new(self.db.clone(), aggregator.clone());
+        // El servicio de miniaturas delega en el agregador para las URLs
+        // candidatas: se recrea (el caché en disco persiste).
+        self.thumbnails = Arc::new(ThumbnailService::new(self.http.clone(), aggregator));
+    }
+
+    /// Resuelve el stream de un track y lo entrega al motor de reproducción.
+    ///
+    /// Toda la estrategia (caché caliente, caché fría SQLite con verificación,
+    /// reintentos acotados, fallback entre proveedores, expiración) vive en el
+    /// [`crate::media::StreamResolver`]; aquí solo queda la entrega al motor.
+    async fn play_track(&self, track: &Track) -> Result<PlaybackStatus, String> {
+        let resolution = self.resolver.resolve(track).await.map_err(|e| e.to_string())?;
+        let media_source = resolution
+            .media_source()
+            .ok_or_else(|| format!("resolución no reproducible para {}", track.source))?;
+
+        self.router
+            .play(track, Some(media_source))
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    /// Arranca una reproducción y solo después la hace visible como escucha
+    /// persistente. El estado devuelto usa la duración que confirmó el
+    /// decodificador cuando los metadatos del listado no la traían.
+    async fn start_and_record(
+        &self,
+        track: Track,
+    ) -> Result<
+        (
+            PlaybackStatus,
+            Vec<crate::infrastructure::storage::TrackListeningStats>,
+        ),
+        String,
+    > {
+        // Ancla de la cola, track en curso y presupuesto de recuperación se
+        // actualizan ANTES de intentar reproducir (semántica histórica).
+        let key = track.identifier();
+        self.queue.lock().await.mark_played(&key);
+        *self.current.lock().await = Some(track.clone());
+        self.recovery_budget.lock().await.arm(&key);
+
+        let mut status = self.play_track(&track).await?;
+        let mut persisted = status.track.clone().unwrap_or(track);
+        if persisted.duration.is_none() {
+            persisted.duration = status.duration;
+        }
+        status.track = Some(persisted.clone());
+
+        let mut ids = HashMap::new();
+        if let Some(external_id) = persisted.external_id.clone() {
+            ids.insert(persisted.source, external_id);
+        }
+        let internal_id = self
+            .search
+            .save_track(&persisted, &ids)
+            .await
+            .map_err(|e| format!("guardar escucha: {e}"))?;
+        self.history
+            .record(internal_id, persisted.source, persisted.duration)
+            .await
+            .map_err(|e| format!("historial: {e}"))?;
+        let stats = self
+            .history
+            .stats()
+            .await
+            .map_err(|e| format!("estadísticas: {e}"))?;
+        Ok((status, stats))
+    }
+
+    /// Comandos ligeros, mutaciones del estado del backend o raros: se ejecutan
+    /// en línea en el loop principal (los controles de reproducción no esperan).
+    async fn handle(&mut self, cmd: BackendCommand) -> Option<BackendEvent> {
+        match cmd {
+            BackendCommand::SaveSettings(form) => {
+                let form = *form;
+                if let Err(e) = Config::persist(&form) {
+                    return Some(BackendEvent::Error(format!("guardar ajustes: {e}")));
+                }
+                self.config.apply_form(&form);
+                self.rebuild_providers();
+                // Reconstruye router y motores con la nueva política/config
+                // (el Drop del AnalysisRuntime viejo detiene su hilo).
+                let (bus, joined) = EventBus::channel();
+                let (engine_config, features) =
+                    playback::build_engines(&self.config, bus, self.http.clone());
+                self.router = Arc::new(PlaybackRouter::new(engine_config, joined));
+                self.features = features;
+                Some(BackendEvent::Settings(self.config.form()))
+            }
+            BackendCommand::LoadHistory => match self.history.recent(30).await {
+                Ok(entries) => Some(BackendEvent::History(entries)),
+                Err(e) => Some(BackendEvent::Error(format!("historial: {e}"))),
+            },
+            BackendCommand::LoadListeningStats => match self.history.stats().await {
+                Ok(stats) => Some(BackendEvent::ListeningStats(stats)),
+                Err(e) => Some(BackendEvent::Error(format!("estadísticas: {e}"))),
+            },
+            BackendCommand::LoadSources => {
+                Some(BackendEvent::Sources(self.config.available_sources()))
+            }
+            BackendCommand::LoadSettings => Some(BackendEvent::Settings(self.config.form())),
+            BackendCommand::Pause => match self.router.pause().await {
+                Ok(status) => Some(BackendEvent::Playback(status)),
+                Err(e) => Some(BackendEvent::PlaybackError(e.to_string())),
+            },
+            BackendCommand::Resume => match self.router.resume().await {
+                Ok(status) => Some(BackendEvent::Playback(status)),
+                Err(e) => Some(BackendEvent::PlaybackError(e.to_string())),
+            },
+            BackendCommand::Toggle => {
+                let status = self.router.status().await;
+                if status.state == PlaybackState::Playing {
+                    self.router
+                        .pause()
+                        .await
+                        .map(BackendEvent::Playback)
+                        .ok()
+                        .or(Some(BackendEvent::Playback(status)))
+                } else if status.state == PlaybackState::Paused {
+                    self.router
+                        .resume()
+                        .await
+                        .map(BackendEvent::Playback)
+                        .ok()
+                        .or(Some(BackendEvent::Playback(status)))
+                } else {
+                    Some(BackendEvent::Playback(status))
+                }
+            }
+            BackendCommand::Stop => match self.router.stop().await {
+                Ok(status) => Some(BackendEvent::Playback(status)),
+                Err(e) => Some(BackendEvent::PlaybackError(e.to_string())),
+            },
+            BackendCommand::Volume(vol) => match self.router.set_volume(vol).await {
+                Ok(status) => Some(BackendEvent::Playback(status)),
+                Err(e) => Some(BackendEvent::PlaybackError(e.to_string())),
+            },
+            // ---------------------------------------------------- autoplay
+            BackendCommand::SetAutoplay(enabled) => {
+                *self.autoplay.lock().await = enabled;
+                None
+            }
+            BackendCommand::SetAutoplayQueue(tracks) => {
+                // La cola persiste entre canciones: una lista vacía (limpieza
+                // de la UI mientras llegan las recomendaciones de la canción
+                // nueva) no pisa la cola vigente, o los saltos y el autoplay
+                // se quedarían sin cola durante el buffering.
+                let mut queue = self.queue.lock().await;
+                if !tracks.is_empty() || queue.is_empty() {
+                    queue.set_tracks(tracks);
+                }
+                None
+            }
+            // Comandos pesados: se procesan en tareas propias (ver `spawn_backend`).
+            _ => unreachable!("comando pesado atendido por `handle_heavy`"),
+        }
+    }
+
+    /// Comandos pesados (red, caché de letras/miniaturas, playlists, `Play`):
+    /// se ejecutan sobre un clon del backend, en una tarea propia, para no
+    /// bloquear los controles de reproducción.
+    async fn handle_heavy(&self, cmd: BackendCommand) -> Option<BackendEvent> {
+        match cmd {
+            BackendCommand::Search(query) => {
+                if self.search.aggregator().is_empty() {
+                    Some(BackendEvent::Message(
+                        "No hay fuentes de catálogo activas (revisa los feature flags en .env)."
+                            .to_string(),
+                    ))
+                } else {
+                    let outcome = self.search.search_tracks(&query, 10).await;
+                    match outcome {
+                        Ok(outcome) => Some(BackendEvent::SearchResults {
+                            query,
+                            outcome: Box::new(outcome),
+                        }),
+                        Err(e) => Some(BackendEvent::Error(format!("búsqueda: {e}"))),
+                    }
+                }
+            }
+            BackendCommand::SaveTrack(track) => {
+                let track = *track;
+                let mut ids = HashMap::new();
+                if let Some(ext) = track.external_id.clone() {
+                    ids.insert(track.source, ext);
+                }
+                match self.search.save_track(&track, &ids).await {
+                    Ok(internal_id) => Some(BackendEvent::TrackSaved {
+                        track: Box::new(track),
+                        internal_id,
+                    }),
+                    Err(e) => Some(BackendEvent::Error(format!("guardar: {e}"))),
+                }
+            }
+            BackendCommand::Play(track) => match self.start_and_record(*track).await {
+                Ok((status, stats)) => Some(BackendEvent::PlaybackStarted { status, stats }),
+                Err(e) => Some(BackendEvent::PlaybackError(e)),
+            },
+            BackendCommand::NextTrack => match self.skip_track(true).await {
+                Ok(Some((status, stats))) => Some(BackendEvent::PlaybackStarted { status, stats }),
+                Ok(None) => None,
+                Err(e) => Some(BackendEvent::Message(e)),
+            },
+            BackendCommand::PrevTrack => match self.skip_track(false).await {
+                Ok(Some((status, stats))) => Some(BackendEvent::PlaybackStarted { status, stats }),
+                Ok(None) => None,
+                Err(e) => Some(BackendEvent::Message(e)),
+            },
+            BackendCommand::LoadRelated(track) => {
+                let track = *track;
+                let video_id = track.external_id.clone().unwrap_or_default();
+                // Recomendados desde YouTube Music (solo esa parte).
+                let mut related = self.search.aggregator().related(&video_id).await;
+                self.search
+                    .aggregator()
+                    .hydrate_missing_durations(&mut related)
+                    .await;
+                // Letra sincronizada desde LRCLIB: única fuente del karaoke.
+                let mut synced = self.search.aggregator().synced_lyrics(&track).await;
+
+                // Id canónico del track (el ya guardado en la BD): permite leer
+                // y escribir la caché de letras aunque este track llegara sin
+                // `id` interno (p. ej. recién buscado y reproducido en vivo).
+                let cache_id = if track.id > 0 {
+                    Some(track.id)
+                } else if !video_id.is_empty() {
+                    self.db
+                        .internal_id_for_external(&video_id)
+                        .await
+                        .ok()
+                        .flatten()
+                } else {
+                    None
+                };
+                if let Some(id) = cache_id {
+                    // Caché local como respaldo cuando LRCLIB no responde
+                    // (offline, rate-limit 429...): se recupera el LRC de una
+                    // sesión anterior. La caché solo guarda sincronizadas.
+                    if synced.is_none() {
+                        synced = self.db.get_synced_lyrics(id).await.ok().flatten();
+                    }
+                    if let Some(s) = &synced {
+                        let _ = self.db.cache_synced_lyrics(id, s).await;
+                    }
+                }
+                Some(BackendEvent::Related {
+                    track: Box::new(track),
+                    related,
+                    synced,
+                })
+            }
+            BackendCommand::Thumbnail(track) => {
+                let track = *track;
+                let key = track.identifier();
+                let state = self.thumbnails.prepare(&track).await;
+                Some(BackendEvent::Thumbnail { key, state })
+            }
+            // `Seek` puede bloquear hasta que la región objetivo del stream
+            // quede descargada (streams HTTP progresivos): fuera del loop para
+            // no congelar los controles durante un salto hacia delante.
+            BackendCommand::Seek(secs) => match self.router.seek(Duration::from_secs(secs)).await {
+                Ok(status) => Some(BackendEvent::Playback(status)),
+                Err(e) => Some(BackendEvent::PlaybackError(e.to_string())),
+            },
+            // ------------------------------------------------------ playlists
+            BackendCommand::ListPlaylists => match self.db.list_playlists().await {
+                Ok(pls) => Some(BackendEvent::Playlists(pls)),
+                Err(e) => Some(BackendEvent::Error(format!("playlists: {e}"))),
+            },
+            BackendCommand::CreatePlaylist(name) => match self.db.create_playlist(&name).await {
+                Ok(_) => Some(self.ok_playlists()),
+                Err(e) => Some(BackendEvent::Error(format!("crear playlist: {e}"))),
+            },
+            BackendCommand::RenamePlaylist(id, name) => {
+                match self.db.rename_playlist(id, &name).await {
+                    Ok(()) => Some(self.ok_playlists()),
+                    Err(e) => Some(BackendEvent::Error(format!("renombrar playlist: {e}"))),
+                }
+            }
+            BackendCommand::DeletePlaylist(id) => match self.db.delete_playlist(id).await {
+                Ok(()) => Some(self.ok_playlists()),
+                Err(e) => Some(BackendEvent::Error(format!("borrar playlist: {e}"))),
+            },
+            BackendCommand::PlaylistTracks(id) => match self.db.playlist_tracks(id).await {
+                Ok(tracks) => Some(BackendEvent::PlaylistTracks {
+                    playlist_id: id,
+                    tracks,
+                }),
+                Err(e) => Some(BackendEvent::Error(format!("tracks playlist: {e}"))),
+            },
+            BackendCommand::AddToPlaylist(pid, tid) => {
+                match self.db.add_to_playlist(pid, tid).await {
+                    Ok(()) => Some(self.ok_playlists()),
+                    Err(e) => Some(BackendEvent::Error(format!("añadir: {e}"))),
+                }
+            }
+            BackendCommand::RemoveFromPlaylist(pid, tid) => {
+                match self.db.remove_from_playlist(pid, tid).await {
+                    Ok(()) => Some(self.ok_playlists()),
+                    Err(e) => Some(BackendEvent::Error(format!("quitar: {e}"))),
+                }
+            }
+            BackendCommand::SetArtworkOverride(tid, image) => {
+                match self.db.set_artwork_override(tid, &image).await {
+                    Ok(()) => Some(BackendEvent::Message("Portada actualizada.".to_string())),
+                    Err(e) => Some(BackendEvent::Error(format!("portada: {e}"))),
+                }
+            }
+            // Comandos ligeros: se procesan en línea en `handle`.
+            _ => unreachable!("comando ligero atendido por `handle`"),
+        }
+    }
+
+    fn ok_playlists(&self) -> BackendEvent {
+        // Respuesta silenciosa para mutaciones: refresca el listado.
+        BackendEvent::Message("Playlists actualizadas".to_string())
+    }
+
+    /// Track de la cola en la dirección pedida, relativo al último reproducido
+    /// (la navegación vive en [`QueueManager`]; el backend solo decide si hay
+    /// cola que recorrer).
+    async fn skip_track(
+        &self,
+        forward: bool,
+    ) -> Result<Option<(PlaybackStatus, Vec<crate::infrastructure::storage::TrackListeningStats>)>, String> {
+        let next = {
+            let mut queue = self.queue.lock().await;
+            queue.pick(forward, None)
+        };
+        let Some(next) = next else {
+            return Err("Sin cola de recomendaciones. Reproduce una canción para cargarlas.".to_string());
+        };
+        match self.start_and_record(next).await {
+            Ok(result) => Ok(Some(result)),
+            Err(e) => Err(format!("salto: {e}")),
+        }
+    }
+
+    /// Reproduce la siguiente recomendación si el autoplay está activo.
+    /// Devuelve `Ok(None)` cuando no hay autoplay o cola que seguir.
+    ///
+    /// `finished_after` es la canción que acababa de terminar cuando se disparó
+    /// el `Finished`: si mientras esta tarea resolvía la cola el usuario lanzó
+    /// otra reproducción (el ancla cambió), la cola quedó obsoleta y no debe
+    /// pisar la canción que el usuario pidió.
+    async fn autoplay_next(
+        &self,
+        finished_after: Option<String>,
+    ) -> Result<
+        Option<(
+            PlaybackStatus,
+            Vec<crate::infrastructure::storage::TrackListeningStats>,
+        )>,
+        String,
+    > {
+        let autoplay = *self.autoplay.lock().await;
+        if !autoplay || self.queue.lock().await.is_empty() {
+            return Ok(None);
+        }
+        if self.queue.lock().await.last_played() != finished_after.as_deref() {
+            return Ok(None);
+        }
+        let next = self.queue.lock().await.pick(true, finished_after.as_deref())
+            .ok_or_else(|| "sin siguiente recomendación".to_string())?;
+        match self.start_and_record(next).await {
+            Ok(result) => Ok(Some(result)),
+            Err(e) => Err(format!("autoplay: {e}")),
+        }
+    }
+
+    /// Recuperación en caliente: re-resuelve el stream del track en curso con
+    /// una resolución FRESCA y reintenta la reproducción (spec §37).
+    ///
+    /// Solo se llama cuando el presupuesto lo permite y la clasificación dijo
+    /// `RefreshAndResume`; un fallo aquí NO reinicia la app ni rompe la cola:
+    /// degrada al aviso original.
+    async fn recover_current(&self, original_notice: String) -> RecoveryOutcome {
+        let Some(track) = self.current.lock().await.clone() else {
+            return RecoveryOutcome::Failed(original_notice);
+        };
+        tracing::warn!(key = %track.identifier(), "playback_recovery_started");
+        let fresh = async { self.resolver.refresh(&track).await.ok()?.media_source() };
+        match fresh.await {
+            Some(media_source) => match self.router.play(&track, Some(media_source)).await {
+                Ok(status) => {
+                    tracing::info!(key = %track.identifier(), "playback_recovery_success");
+                    RecoveryOutcome::Resumed(status)
+                }
+                Err(_) => RecoveryOutcome::Failed(original_notice),
+            },
+            None => {
+                tracing::warn!(key = %track.identifier(), "playback_recovery_failed");
+                RecoveryOutcome::Failed(original_notice)
+            }
+        }
+    }
+}
+
+/// Resultado de una recuperación en caliente.
+#[allow(clippy::large_enum_variant)] // mismo patrón que BackendEvent
+enum RecoveryOutcome {
+    Resumed(PlaybackStatus),
+    /// No se pudo: se informa con el aviso ORIGINAL (nunca ocultar la causa).
+    Failed(String),
+}
+
+/// Lanza la tarea del backend y devuelve (emisor de comandos, receptor de eventos).
+pub fn spawn_backend(
+    mut backend: Backend,
+) -> (
+    UnboundedSender<BackendCommand>,
+    UnboundedReceiver<BackendEvent>,
+) {
+    let (cmd_tx, mut cmd_rx) = unbounded_channel::<BackendCommand>();
+    let (event_tx, event_rx) = unbounded_channel::<BackendEvent>();
+    let router = backend.router.clone();
+
+    tokio::spawn(async move {
+        // Receptor de eventos de reproducción del router.
+        let mut playback_events = router.subscribe();
+        // Informa del progreso de reproducción dos veces por segundo.
+        let mut ticker = tokio::time::interval(Duration::from_millis(500));
+        // Muestreo de features para la visualización (~15 Hz): cada evento
+        // redibuja la TUI, así que el ritmo visual sigue al flujo real.
+        let mut visual_ticker = tokio::time::interval(Duration::from_millis(66));
+        visual_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut last_sent_features: Option<std::time::Duration> = None;
+        loop {
+            tokio::select! {
+                cmd = cmd_rx.recv() => {
+                    match cmd {
+                        Some(cmd) => {
+                            // Comandos pesados (red, `Play` con su prebuffer,
+                            // playlists): se lanzan en una tarea propia con un
+                            // clon, de modo que los controles de reproducción
+                            // del siguiente comando se atienden de inmediato.
+                            if is_heavy(&cmd) {
+                                let backend = backend.clone();
+                                let event_tx = event_tx.clone();
+                                tokio::spawn(async move {
+                                    if let Some(event) = backend.handle_heavy(cmd).await {
+                                        let _ = event_tx.send(event);
+                                    }
+                                });
+                            } else if let Some(event) = backend.handle(cmd).await {
+                                let _ = event_tx.send(event);
+                            }
+                        }
+                        None => break,
+                    }
+                }
+                ev = playback_events.recv() => {
+                    match ev {
+                        // Fin de canción: el corte por límite de red (Cut) se
+                        // trata EXACTAMENTE igual — la canción termina en el
+                        // prefijo servible, nunca se simula una continuación
+                        // (repetir desde el inicio) que confunde al usuario.
+                        Ok(ev @ (PlaybackEvent::Finished | PlaybackEvent::Cut(_))) => {
+                            if let PlaybackEvent::Cut(msg) = ev {
+                                // Aviso discreto del porqué del fin (pie de
+                                // página con caducidad, no toca la línea de
+                                // estado).
+                                let _ = event_tx.send(BackendEvent::StreamError(msg));
+                            }
+                            // Informa del fin de inmediato: la UI deja de
+                            // pintar la canción terminada (karaoke limpio,
+                            // estado detenido) mientras el autoplay resuelve
+                            // la siguiente.
+                            let _ = event_tx.send(BackendEvent::Playback(
+                                PlaybackStatus::idle(),
+                            ));
+                            // El autoplay reproduce la siguiente canción (con
+                            // su prebuffer): fuera del loop para no bloquear.
+                            let backend = backend.clone();
+                            let event_tx = event_tx.clone();
+                            // La canción que acaba de terminar: si el usuario
+                            // lanza otra mientras se resuelve la cola, el
+                            // autoplay debe abortarse (ver `autoplay_next`).
+                            let finished_after = backend
+                                .queue
+                                .lock()
+                                .await
+                                .last_played()
+                                .map(str::to_string);
+                            tokio::spawn(async move {
+                                match backend.autoplay_next(finished_after.clone()).await {
+                                    Ok(Some((status, stats))) => {
+                                        let _ = event_tx.send(BackendEvent::PlaybackStarted { status, stats });
+                                    }
+                                    Ok(None) => {}
+                                    Err(e) => {
+                                        // Solo se reporta el fallo si no hubo
+                                        // una reproducción nueva del usuario
+                                        // mientras se resolvía la cola (ese
+                                        // fallo de autoplay es irrelevante).
+                                        if backend.queue.lock().await.last_played()
+                                            == finished_after.as_deref()
+                                        {
+                                            let _ = event_tx.send(BackendEvent::PlaybackError(e));
+                                        }
+                                    }
+                                }
+                            });
+                        }
+                        Ok(PlaybackEvent::Error(msg)) => {
+                            // Errores en caliente: primero se intenta la
+                            // recuperación acotada (UN refresco por track);
+                            // si no procede o falla, queda el aviso ORIGINAL
+                            // como pie discreto.
+                            let event_for_decision = PlaybackEvent::Error(msg.clone());
+                            let key = backend
+                                .current
+                                .lock()
+                                .await
+                                .as_ref()
+                                .map(|t| t.identifier());
+                            // Orden deliberado: clasificar ANTES de gastar el
+                            // presupuesto (un fallo no recuperable no lo quema).
+                            let mut allowed =
+                                decide_recovery(&event_for_decision)
+                                    == RecoveryAction::RefreshAndResume;
+                            match key.as_deref() {
+                                Some(k) if allowed => {
+                                    allowed = backend
+                                        .recovery_budget
+                                        .lock()
+                                        .await
+                                        .try_consume(k);
+                                }
+                                _ => allowed = false,
+                            }
+                            if allowed {
+                                let backend = backend.clone();
+                                let event_tx = event_tx.clone();
+                                tokio::spawn(async move {
+                                    match backend.recover_current(msg.clone()).await {
+                                        RecoveryOutcome::Resumed(status) => {
+                                            let _ = event_tx.send(BackendEvent::Message(
+                                                "stream renovado tras un fallo; seguimos donde estabas.".to_string(),
+                                            ));
+                                            let _ = event_tx.send(BackendEvent::Playback(status));
+                                        }
+                                        RecoveryOutcome::Failed(original) => {
+                                            let _ = event_tx.send(BackendEvent::StreamError(original));
+                                        }
+                                    }
+                                });
+                            } else {
+                                let _ = event_tx.send(BackendEvent::StreamError(msg));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                _ = visual_ticker.tick() => {
+                    if backend.visuals_enabled() {
+                        if let Some(bus) = backend.features() {
+                            if let Some(f) = bus.latest() {
+                                if last_sent_features != Some(f.timestamp) {
+                                    last_sent_features = Some(f.timestamp);
+                                    let _ = event_tx.send(BackendEvent::Features(std::sync::Arc::clone(&f)));
+                                }
+                            }
+                        }
+                    }
+                }
+                _ = ticker.tick() => {
+                    let status = backend.router.status().await;
+                    if status.state != PlaybackState::Stopped {
+                        let _ = event_tx.send(BackendEvent::Playback(status.clone()));
+                    }
+                    // Preparación anticipada del SIGUIENTE track: solo cuando
+                    // el actual entra en la ventana final (spec §36). Nunca se
+                    // resuelve la cola entera; el warm va a la caché.
+                    if status.state == PlaybackState::Playing {
+                        let current_id = status.track.as_ref().map(|t| t.identifier());
+                        if let Some(current_id) = current_id {
+                            let next = backend
+                                .queue
+                                .lock()
+                                .await
+                                .pick(true, Some(current_id.as_str()));
+                            if crate::playback::should_preload(
+                                status.position,
+                                status.duration,
+                                next.is_some(),
+                                backend.preload.config(),
+                            ) {
+                                backend.preload.consider(next).await;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    (cmd_tx, event_rx)
+}
+
+/// `true` para los comandos que pueden tardar (red, disco, `Play` con su
+/// prebuffer). Se procesan en tareas propias para no bloquear los controles.
+fn is_heavy(cmd: &BackendCommand) -> bool {
+    matches!(
+        cmd,
+        BackendCommand::Search(_)
+            | BackendCommand::SaveTrack(_)
+            | BackendCommand::Play(_)
+            | BackendCommand::NextTrack
+            | BackendCommand::PrevTrack
+            | BackendCommand::LoadRelated(_)
+            | BackendCommand::Thumbnail(_)
+            | BackendCommand::Seek(_)
+            | BackendCommand::ListPlaylists
+            | BackendCommand::CreatePlaylist(_)
+            | BackendCommand::RenamePlaylist(..)
+            | BackendCommand::DeletePlaylist(_)
+            | BackendCommand::PlaylistTracks(_)
+            | BackendCommand::AddToPlaylist(..)
+            | BackendCommand::RemoveFromPlaylist(..)
+            | BackendCommand::SetArtworkOverride(..)
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // La navegación de la cola (avance, wrap, ancla desconocida, shuffle,
+    // repeat) se cubre exhaustivamente en `playback::queue::tests`.
+
+    #[test]
+    fn identifier_falls_back_to_title_and_artist() {
+        let mut t = Track::new(
+            "Canción".to_string(),
+            vec![crate::domain::artist::Artist::new(
+                "Banda".to_string(),
+                None,
+                None,
+                None,
+            )],
+            crate::domain::source::Source::YouTube,
+        );
+        t.external_id = Some("vid".to_string());
+        assert_eq!(t.identifier(), "vid");
+        t.external_id = None;
+        assert_eq!(t.identifier(), "Canción|Banda");
+    }
+
+    /// La decisión de recuperación consume presupuesto EXACTAMENTE una vez por
+    /// track y clasificar no gasta (orden deliberado en el loop de eventos).
+    #[test]
+    fn recovery_decision_and_budget_interplay() {
+        let ev_transport = PlaybackEvent::Error("leer stream: roto".to_string());
+        let ev_decode = PlaybackEvent::Error("decodificar stream: malo".to_string());
+
+        assert_eq!(decide_recovery(&ev_decode), RecoveryAction::Report);
+        assert_eq!(decide_recovery(&ev_transport), RecoveryAction::RefreshAndResume);
+
+        let mut budget = RecoveryBudget::default();
+        budget.arm("song");
+        assert!(budget.try_consume("song"));
+        assert!(!budget.try_consume("song"), "un solo refresco por track");
+    }
+}

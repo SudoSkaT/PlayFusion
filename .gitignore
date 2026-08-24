@@ -1,0 +1,17 @@
+/target
+/data
+*.db
+*.db-shm
+*.db-wal
+.env
+
+target/
+**/target/
+vendor/**/target/
+
+*.snap.new
+
+.idea/
+.vscode/
+*.swp
+.DS_Store

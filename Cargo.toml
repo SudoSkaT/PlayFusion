@@ -1,0 +1,41 @@
+[package]
+name = "playfusion"
+version = "0.1.0"
+edition = "2021"
+description = "TUI music player that uses YouTube / YouTube Music (via rustypipe) as its only source"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }
+futures-util = "0.3"
+rodio = { version = "0.22", default-features = false, features = ["playback", "symphonia-all"] }
+rustypipe = { version = "0.11.4", default-features = false, features = ["rustls-tls-webpki-roots"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-trait = "0.1"
+thiserror = "2"
+tracing = "0.1"
+rustfft = "6"
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "chrono", "migrate"] }
+dotenvy = "0.15"
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+unicode-normalization = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { version = "1", features = ["test-util"] }
+
+# rustypipe vendored con parche local:
+# - cliente Android sin deofuscación (necesaria porque la player.js actual no
+#   se puede extraer con 0.11.4);
+# - PO tokens también en Android/iOS (YouTube los exige desde 2026; sin ellos
+#   los streams responden 403 Forbidden);
+# - cliente VISIONOS (id 101): sus URLs NO tienen el techo posicional (~1 MiB)
+#   que googlevideo aplica a ANDROID_VR/iOS; es el primario del provider.
+[patch.crates-io]
+rustypipe = { path = "vendor/rustypipe" }
