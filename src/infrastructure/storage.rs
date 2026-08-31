@@ -4,11 +4,12 @@
 //! de Aplicación. No contienen lógica de negocio, solo SQL.
 
 use std::collections::HashMap;
-use std::str::FromStr;
 
 use anyhow::Result;
 use sqlx::sqlite::{Sqlite, SqliteQueryResult};
 use sqlx::{Row, Transaction};
+
+use crate::recommendation::types::TrackAcousticProfile;
 
 use crate::domain::{album::Album, artist::Artist, source::Source, track::Track};
 
@@ -31,7 +32,9 @@ pub struct HistoryEntry {
 #[derive(Debug, Clone)]
 pub struct TrackListeningStats {
     /// La misma clave estable usada por `Track::identifier()`.
+    pub track_id: i64,
     pub key: String,
+    pub artist_name: Option<String>,
     pub play_count: i64,
     pub last_played: String,
     pub recently_played: bool,
@@ -101,8 +104,14 @@ impl Db {
             .map(|r| HistoryEntry {
                 track_id: r.get("track_id"),
                 played_at: r.get("played_at"),
-                source: Source::from_str(r.get::<String, _>("source").as_str())
-                    .unwrap_or(Source::YouTube),
+                source: r.get::<Option<String>, _>("source")
+                    .as_deref()
+                    .map_or(Source::YouTube, |s| {
+                        match s {
+                            "youtube" => Source::YouTube,
+                            _ => Source::YouTube,
+                        }
+                    }),
                 duration: r.get("duration"),
                 title: r.get("title"),
                 artist_name: r.get("artist_name"),
@@ -111,11 +120,60 @@ impl Db {
             .collect())
     }
 
+    /// Obtiene el perfil acústico de un track específico.
+    pub async fn acoustic_profile_for_track(&self, track_id: i64) -> Result<Option<TrackAcousticProfile>> {
+        let row = sqlx::query(
+            "SELECT rms_mean, bass_mean, low_mid_mean, mid_mean, high_mid_mean, high_mean, \
+                    spectral_centroid_mean, bpm_mean, bpm_variance, onset_mean, band_profile, \
+                    frame_count \
+             FROM track_acoustic_profiles \
+             WHERE track_id = ?1",
+        )
+        .bind(track_id)
+        .fetch_optional(self.pool())
+        .await?;
+
+Ok(row.map(|r| TrackAcousticProfile {
+            track_id: r.get("track_id"),
+            rms_mean: r.get("rms_mean"),
+            bass_mean: r.get("bass_mean"),
+            low_mid_mean: r.get("low_mid_mean"),
+            mid_mean: r.get("mid_mean"),
+            high_mid_mean: r.get("high_mid_mean"),
+            high_mean: r.get("high_mean"),
+            spectral_centroid_mean: r.get("spectral_centroid_mean"),
+            bpm_mean: r.get("bpm_mean"),
+            bpm_variance: r.get("bpm_variance"),
+            onset_mean: r.get("onset_mean"),
+            band_profile: {
+                let s: String = r.get("band_profile");
+                // Parse "[r1,r2,r3,r4,r5]" into [f32; 5]
+                let s = s.trim();
+                if s.starts_with('[') && s.ends_with(']') {
+                    let inner = &s[1..s.len() - 1];
+                    let mut arr = [0.0f32; 5];
+                    let mut i = 0;
+                    for part in inner.split(',') {
+                        if i >= 5 { break; }
+                        if let Ok(val) = part.trim().parse::<f32>() {
+                            arr[i] = val;
+                            i += 1;
+                        }
+                    }
+                    arr
+                } else {
+                    [0.0f32; 5]
+                }
+            },
+            frame_count: r.get("frame_count"),
+        }))
+    }
+
     /// Frecuencia y última escucha de cada track. La agregación ocurre en
     /// SQLite, no durante el render de la TUI.
     pub async fn listening_stats(&self) -> Result<Vec<TrackListeningStats>> {
         let rows = sqlx::query(
-            "SELECT t.title, a.name AS artist_name, p.youtube_id, \
+            "SELECT h.track_id, t.title, a.name AS artist_name, p.youtube_id, \
                     COUNT(h.id) AS play_count, MAX(h.played_at) AS last_played, \
                     MAX(h.played_at) >= datetime('now', '-7 days') AS recently_played \
              FROM history h \
@@ -131,12 +189,15 @@ impl Db {
         Ok(rows
             .iter()
             .map(|r| {
+                let track_id: i64 = r.get("track_id");
                 let title: String = r.get("title");
                 let artist: Option<String> = r.get("artist_name");
                 let external: Option<String> = r.get("youtube_id");
                 TrackListeningStats {
+                    track_id,
                     key: external
-                        .unwrap_or_else(|| format!("{}|{}", title, artist.unwrap_or_default())),
+                        .unwrap_or_else(|| format!("{}|{}", title, artist.clone().unwrap_or_default())),
+                    artist_name: artist,
                     play_count: r.get("play_count"),
                     last_played: r.get("last_played"),
                     recently_played: r.get::<i64, _>("recently_played") != 0,

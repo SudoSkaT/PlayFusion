@@ -24,5 +24,6 @@ pub mod infrastructure;
 pub mod media;
 pub mod playback;
 pub mod providers;
+pub mod recommendation;
 pub mod ui;
 pub mod visualization;
