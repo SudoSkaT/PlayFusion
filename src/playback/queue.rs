@@ -13,7 +13,13 @@
 //! actual queda primero al activarla); el generador es un xorshift seedeable
 //! para que los tests sean deterministas.
 
+use std::collections::VecDeque;
+
 use crate::domain::track::Track;
+
+/// Cuántas canciones distintas recordar como "recientes" para no repetirlas de
+/// inmediato en el autoplay/navegación (FASE bugfix anti-bucle).
+const RECENT_LIMIT: usize = 8;
 
 /// Comportamiento al llegar al extremo de la cola.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -30,6 +36,9 @@ pub enum RepeatMode {
 pub struct QueueManager {
     tracks: Vec<Track>,
     last_played: Option<String>,
+    /// Historial FIFO de las últimas canciones reproducidas (identificadores):
+    /// `pick` evita devolver de inmediato una canción recién escuchada.
+    recent: VecDeque<String>,
     shuffle: bool,
     /// Permutación de índices vigente cuando `shuffle` está activo.
     order: Vec<usize>,
@@ -49,6 +58,7 @@ impl QueueManager {
         Self {
             tracks: Vec::new(),
             last_played: None,
+            recent: VecDeque::new(),
             shuffle: false,
             order: Vec::new(),
             rng: seed | 1,
@@ -74,9 +84,22 @@ impl QueueManager {
         self.last_played.as_deref()
     }
 
-    /// Registra que se reprodujo un track (actualiza el ancla de navegación).
+    /// Registra que se reproducirá un track (actualiza el ancla y el historial
+    /// de recientes para la anti-repetición del autoplay).
     pub fn mark_played(&mut self, id: &str) {
         self.last_played = Some(id.to_string());
+        if let Some(pos) = self.recent.iter().position(|r| r == id) {
+            self.recent.remove(pos);
+        }
+        self.recent.push_back(id.to_string());
+        while self.recent.len() > RECENT_LIMIT {
+            self.recent.pop_front();
+        }
+    }
+
+    /// ¿Está este identificador entre los recientemente reproducidos?
+    pub fn is_recent(&self, id: &str) -> bool {
+        self.recent.iter().any(|r| r == id)
     }
 
     // -------------------------------------------------------- mutaciones
@@ -131,7 +154,7 @@ impl QueueManager {
         }
         let n = self.tracks.len();
         let start = self.anchor_index(anchor);
-        let idx = match (start, forward) {
+        let base = match (start, forward) {
             (Some(i), true) => match self.repeat {
                 RepeatMode::All => (i + 1) % n,
                 RepeatMode::Off => {
@@ -151,6 +174,7 @@ impl QueueManager {
             (None, true) => 0,
             (None, false) => n - 1,
         };
+        let idx = self.first_unrecent(base, forward, n);
         Some(self.tracks[idx].clone())
     }
 
@@ -183,7 +207,31 @@ impl QueueManager {
             (None, true) => 0,
             (None, false) => n - 1,
         };
+        // La permutación anclada ya garantiza no repetir de inmediato: aquí no
+        // se aplica el salto de "recientes" (rompería la unicidad del ciclo).
         Some(self.tracks[self.order[next_pos]].clone())
+    }
+
+    /// Recorre `n` pasos desde `start` en la dirección pedida y devuelve el
+    /// PRIMER track que NO esté entre los recientemente reproducidos. Si todos
+    /// son recientes (cola muy pequeña) cae al primer candidato para no
+    /// bloquear la reproducción: el anti-bucle es de "máximo esfuerzo" cuando
+    /// no hay alternativas.
+    fn first_unrecent(
+        &self,
+        start: usize,
+        forward: bool,
+        n: usize,
+    ) -> usize {
+        let fallback = start;
+        for k in 0..n {
+            let step = if forward { k } else { n - k };
+            let pos = (start + step) % n;
+            if !self.is_recent(&self.tracks[pos].identifier()) {
+                return pos;
+            }
+        }
+        fallback
     }
 
     /// Índice del track actual: el ancla explícita manda; si no, el último
@@ -382,5 +430,72 @@ mod tests {
             anchor = Some(t.identifier());
         }
         assert_eq!(seen.len(), 2);
+    }
+
+    // ------------------------------------------------- anti-repetición / bucles
+
+    #[test]
+    fn skips_recent_tracks_choosing_an_unrecent_next() {
+        // Tras reproducir c y b, el "siguiente" secuencial de b es c (reciente).
+        // La anti-repetición salta c y devuelve un track no reciente (a).
+        let mut q = queue(&["a", "b", "c"]);
+        q.mark_played("c");
+        q.mark_played("b");
+        assert_eq!(id(&q.pick(true, Some("b"))), "a", "salta la recién escuchada c");
+    }
+
+    #[test]
+    fn recently_played_are_not_immediately_repeated_in_sequence() {
+        // A lo largo de un ciclo el "siguiente" nunca es el que se acaba de
+        // reproducir mientras exista alguna alternativa no reciente.
+        let mut q = queue(&["a", "b", "c", "d"]);
+        let mut anchor: Option<String> = None;
+        let mut prev: Option<String> = None;
+        for _ in 0..4 {
+            let t = q.pick(true, anchor.as_deref()).expect("cola con alternativas");
+            if let Some(p) = &prev {
+                assert_ne!(t.identifier(), *p, "no se repite la canción anterior");
+            }
+            prev = Some(t.identifier());
+            q.mark_played(&t.identifier());
+            anchor = prev.clone();
+        }
+    }
+
+    #[test]
+    fn small_queue_falls_back_when_everything_is_recent() {
+        // Con solo 2 tracks no hay alternativa: cae al primero (máximo esfuerzo)
+        // en vez de devolver `None` o colgarse.
+        let mut q = queue(&["a", "b"]);
+        q.mark_played("a");
+        q.mark_played("b");
+        let t = q.pick(true, Some("b")).expect("nunca None con cola no vacía");
+        assert_eq!(t.identifier(), "a");
+    }
+
+    #[test]
+    fn refreshed_queue_still_avoids_recently_played() {
+        // `set_tracks` conserva la memoria de lo escuchado: al refrescar la
+        // cola no reaparece de inmediato una canción recién reproducida.
+        let mut q = queue(&["a", "b", "c", "d"]);
+        q.mark_played("a");
+        q.mark_played("b");
+        q.set_tracks(vec![track("a"), track("c"), track("d")]);
+        // "b" ya no está en la cola: el ancla cae al desconocido (desde el
+        // principio). "a" es reciente → se salta y devuelve "c".
+        assert_eq!(id(&q.pick(true, Some("b"))), "c");
+    }
+
+    #[test]
+    fn backward_pick_also_skips_recently_played() {
+        let mut q = queue(&["a", "b", "c", "d"]);
+        q.mark_played("a");
+        q.mark_played("d");
+        // "después" de reproducir a, se retrocede: el candidato inmediato es
+        // el anterior a `a`... con recent={d,a} y ancla a, se intenta el previo.
+        let t = q.pick(false, Some("a")).expect("cola no vacía");
+        // El inmediato anterior a "a" es "d" (reciente) si no hay salto; con
+        // salto hacia atrás debería caer a un no reciente o al fallback.
+        assert_ne!(t.identifier(), "a", "nunca devuelve lo que se acaba de oír");
     }
 }

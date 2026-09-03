@@ -44,6 +44,12 @@ pub enum BackendEvent {
         stats: Vec<TrackListeningStats>,
     },
     PlaybackError(String),
+    /// Comenzó a ejecutarse un seek en el backend (estado transitorio).
+    SeekStarted,
+    /// Un seek se confirmó como salto REAL del audio.
+    SeekCompleted,
+    /// Un seek falló: el audio no cambió de posición.
+    SeekFailed,
     /// Error **en caliente** del stream de audio (buffer overrun/underrun,
     /// corte de red, error de decodificación en mitad de la canción). No es un
     /// fallo terminal de reproducción: la UI lo muestra como pie de página

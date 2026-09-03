@@ -27,13 +27,43 @@ fn heat_color(intensity: f32) -> Color {
     }
 }
 
+/// Color de la barra según la intensidad y la paleta de la portada.
+///
+/// Cuando hay paleta (tres colores dominantes de la portada), las barras se
+/// rellenan con esos colores: bajo → 3º dominante, medio → 2º, alto → 1º
+/// (el más dominante). Sin paleta cae al esquema fijo [`heat_color`].
+fn bar_color(intensity: f32, palette: Option<[[u8; 3]; 3]>) -> Color {
+    let Some(p) = palette else {
+        return heat_color(intensity);
+    };
+    match (intensity * 4.0) as usize {
+        0 => Color::DarkGray,
+        1 => Color::Rgb(p[2][0], p[2][1], p[2][2]),
+        2 => Color::Rgb(p[1][0], p[1][1], p[1][2]),
+        _ => Color::Rgb(p[0][0], p[0][1], p[0][2]),
+    }
+}
+
 /// Dibuja el visualizador en `area`.
 ///
 /// Con `state.active == false` pinta un marco apagado (análisis OFF o sin
 /// datos aún): la vista nunca "desaparece" ni salta de layout.
-pub fn render(frame: &mut Frame, area: Rect, state: &VisualState, position_secs: f32) {
+///
+/// `palette` son los tres colores dominantes de la portada (opcional): si está
+/// presente, las barras se rellenan con esos colores en vez del esquema fijo.
+pub fn render(
+    frame: &mut Frame,
+    area: Rect,
+    state: &VisualState,
+    position_secs: f32,
+    palette: Option<[[u8; 3]; 3]>,
+) {
     let pulse_dot = if state.pulse > 0.55 { "●" } else { if state.pulse > 0.2 { "◉" } else { "○" } };
-    let title_color = if state.active { heat_color(state.intensity.max(0.15)) } else { Color::DarkGray };
+    let title_color = if state.active {
+        bar_color(state.intensity.max(0.15), palette)
+    } else {
+        Color::DarkGray
+    };
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -60,7 +90,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &VisualState, position_secs:
     }
 
     let color = if state.active {
-        heat_color(state.intensity)
+        bar_color(state.intensity, palette)
     } else {
         Color::DarkGray
     };
@@ -112,18 +142,24 @@ mod tests {
     fn renders_active_and_inactive_without_panic() {
         let backend = TestBackend::new(60, 6);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| render(f, f.area(), &active_state(0.9), 42.0)).unwrap();
-        terminal.draw(|f| render(f, f.area(), &VisualState::inactive(), 0.0)).unwrap();
+        terminal
+            .draw(|f| render(f, f.area(), &active_state(0.9), 42.0, None))
+            .unwrap();
+        terminal
+            .draw(|f| render(f, f.area(), &VisualState::inactive(), 0.0, None))
+            .unwrap();
     }
 
     #[test]
     fn tiny_areas_do_not_panic() {
         let backend = TestBackend::new(10, 3);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| render(f, f.area(), &active_state(1.0), 1.0)).unwrap();
+        terminal
+            .draw(|f| render(f, f.area(), &active_state(1.0), 1.0, None))
+            .unwrap();
         // Área degenerada de 0 filas útiles:
         terminal
-            .draw(|f| render(f, Rect::new(0, 0, 5, 2), &active_state(1.0), 1.0))
+            .draw(|f| render(f, Rect::new(0, 0, 5, 2), &active_state(1.0), 1.0, None))
             .unwrap();
     }
 
@@ -132,12 +168,37 @@ mod tests {
         let case = |level: f32| {
             let backend = TestBackend::new(40, 6);
             let mut terminal = Terminal::new(backend).unwrap();
-            terminal.draw(|f| render(f, f.area(), &active_state(level), 0.0)).unwrap();
-            let content = terminal.backend().buffer().content().iter()
+            terminal
+                .draw(|f| render(f, f.area(), &active_state(level), 0.0, None))
+                .unwrap();
+            let content = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
                 .filter(|c| !c.symbol().trim().is_empty())
                 .count();
             content
         };
         assert!(case(0.9) > case(0.15), "más nivel ⇒ más celdas pintadas");
+    }
+
+    #[test]
+    fn palette_colors_the_bars() {
+        // Con paleta, una barra activa usa un color RGB de la portada en vez
+        // del esquema cian fijo.
+        let palette = Some([[220u8, 30, 30], [40, 200, 60], [30, 60, 220]]);
+        let backend = TestBackend::new(40, 6);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render(f, f.area(), &active_state(0.9), 0.0, palette))
+            .unwrap();
+        let cells = terminal.backend().buffer().content();
+        let has_palette_color = cells.iter().any(|c| {
+            c.fg == ratatui::style::Color::Rgb(220, 30, 30)
+                || c.fg == ratatui::style::Color::Rgb(40, 200, 60)
+                || c.fg == ratatui::style::Color::Rgb(30, 60, 220)
+        });
+        assert!(has_palette_color, "las barras usan colores de la portada");
     }
 }

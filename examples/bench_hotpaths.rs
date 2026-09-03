@@ -148,7 +148,13 @@ fn main() {
             let backend = ratatui::backend::TestBackend::new(80, 5);
             let mut term = ratatui::Terminal::new(backend).unwrap();
             term.draw(|f| {
-                playfusion::visualization::render::render(f, f.area(), black_box(&state), 42.0)
+                playfusion::visualization::render::render(
+                    f,
+                    f.area(),
+                    black_box(&state),
+                    42.0,
+                    None,
+                )
             })
             .unwrap();
         },

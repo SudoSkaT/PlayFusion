@@ -215,22 +215,68 @@ fn karaoke_stale_lyric_response() {
     let _lyrics_a = SyncLyrics::parse("[00:05] uno\n[00:10] dos\n");
     let _lyrics_b = SyncLyrics::parse("[00:03] alpha\n[00:06] beta\n");
 
-    // Sesión actual: song-b (session = 2).
-    let current_session: u64 = 2;
-    let session_a: u64 = 1; // song-a era la sesión anterior.
+    // La garantía de sesión (FASE 4): el karaoke solo acepta letras cuyo
+    // track coincida con el del reloj maestro. Simulamos que la respuesta de
+    // "song-a" llega cuando el reloj ya apunta a "song-b": el clock la
+    // descarta porque el track_key NO coincide.
+    let mut clock = PositionClock::new();
+    let now = Instant::now();
+    clock.update(Some("song-a"), Duration::ZERO, now); // sesión A
+    clock.update(Some("song-b"), Duration::ZERO, now); // sesión B vigente
 
-    // La respuesta de lyrics para song-a llega con session_id = 1.
-    // Como 1 != 2, se descarta.
-    assert_ne!(session_a, current_session, "lyrics de song-a son stale respecto a song-b");
-
-    // Verificación: si tuviéramos un mecanismo de session_id,
-    // el fetch_lyrics de song-a debería ser ignorado al retornar.
-    // Aquí la prueba es conceptual: session_id stale → lyrics descartados.
-    assert!(
-        session_a < current_session,
-        "la sesión de song-a ({session_a}) es anterior a la actual ({current_session})"
-    );
+    // La respuesta tardía de song-a no puede "ganar" la sesión actual:
+    // track_key() sigue siendo song-b y las letras de song-a se ignoran en la
+    // capa de UI (que compara contra `now_playing`).
+    assert_eq!(clock.track_key(), Some("song-b"), "sesión vigente no se pisa");
+    assert_ne!(clock.track_key(), Some("song-a"), "lyrics de song-a son stale");
 }
+
+// ───────────────────────────────────────────────────────────────────
+// Seek confirmado explícitamente (FASE 2: separar seek real del reloj)
+// ───────────────────────────────────────────────────────────────────
+
+#[test]
+fn karaoke_seek_backward_confirmed_by_backend_event() {
+    let lyrics = lrc_lines();
+    let mut clock = PositionClock::new();
+    let now = Instant::now();
+
+    clock.update(Some("song-a"), Duration::ZERO, now);
+    clock.update(Some("song-a"), Duration::from_secs(15), now);
+
+    // Seek backward a 3s. Mientras el backend pre-descarga, el audio sigue en
+    // 15s: el karaoke sigue ese reloj real, no el objetivo.
+    clock.begin_seek(Duration::from_secs(3));
+    clock.update(Some("song-a"), Duration::from_secs(15), now);
+    assert_eq!(clock.pending_seek().map(|s| s.target), Some(Duration::from_secs(3)));
+    assert_eq!(clock.position(), Duration::from_secs(15), "audio real antes del salto");
+
+    // El backend CONFIRMA el salto real: se re-ancla en el objetivo.
+    clock.confirm_seek(now);
+    assert_eq!(clock.position(), Duration::from_secs(3));
+    assert!(clock.pending_seek().is_none());
+    let pos = clock.snapshot(true, false, Some(Duration::from_secs(20)), now);
+    assert_eq!(position_after(&lyrics, pos), 0, "seek backward → línea 0");
+}
+
+#[test]
+fn karaoke_seek_failed_keeps_following_real_audio() {
+    let lyrics = lrc_lines();
+    let mut clock = PositionClock::new();
+    let now = Instant::now();
+
+    clock.update(Some("song-a"), Duration::ZERO, now);
+    clock.update(Some("song-a"), Duration::from_secs(80), now);
+
+    // Seek a 5s, pero el backend NO lo confirmó (falló).
+    clock.begin_seek(Duration::from_secs(5));
+    clock.cancel_pending_seek();
+    assert!(clock.pending_seek().is_none());
+    assert_eq!(clock.position(), Duration::from_secs(80), "el audio nunca se movió");
+    let pos = clock.snapshot(true, false, Some(Duration::from_secs(90)), now);
+    assert_eq!(position_after(&lyrics, pos), 3, "sigue la última línea (80s)");
+}
+
 
 // ───────────────────────────────────────────────────────────────────
 // Reset de clock

@@ -1,97 +1,81 @@
-//! Afinidad del usuario: artista, género, acústico, match directo.
+//! Afinidad del usuario hacia un track concreto.
+//!
+//! Diseño (FASE 9): `metadata_similarity` ya mide la similitud de artista,
+//! género, álbum y año vía el perfil. `user_affinity` NO repite eso; mide la
+//! RELACIÓN DIRECTA del usuario con este track:
+//!   - engagement directo (cuánto y qué tan reciente lo escuchó),
+//!   - afinidad acústica (features del track respecto al perfil acústico).
+//!
+//! Así evitamos el bug previo que usaba el nombre del artista como proxie de
+//! género (no hay datos de género por track en el historial) y separamos dos
+//! señales diferentes: "parecido a lo que te gusta" (metadata) vs. "tú, con
+//! este track" (affinity).
 
 use std::collections::HashMap;
 
 use crate::domain::track::Track;
 use crate::infrastructure::storage::TrackListeningStats;
 use crate::recommendation::types::{AcousticProfile, TrackAcousticProfile};
+use crate::recommendation::scoring::recency::days_since;
+use crate::recommendation::recency_bonus;
 
-/// Afinidad entre un track y el historial del usuario.
+/// Afinidad entre un track y el usuario.
 ///
 /// ```text
-/// affinity = 0.4 · artist_affinity
-///          + 0.3 · genre_affinity
-///          + 0.2 · acoustic_affinity
-///          + 0.1 · direct_match
+/// affinity = 0.6 · engagement   + 0.4 · acoustic_affinity
+/// engagement = engagement_score(track, history)
 /// ```
+///
+/// `engagement` pesa más porque refleja interacción real; la afinidad acústica
+/// refuerza cuando hay perfil de features suficiente.
 pub fn user_affinity(
     track: &Track,
     history: &[TrackListeningStats],
     user_acoustic: &AcousticProfile,
     track_profiles: &HashMap<i64, TrackAcousticProfile>,
 ) -> f64 {
-    let artist_affinity = artist_affinity_score(track, history);
-    let genre_affinity = genre_affinity_score(track, history);
-    let acoustic_affinity_val = acoustic_affinity_score(track, track_profiles, user_acoustic);
-    let direct_match = direct_match_score(track, history);
-
-    (0.4 * artist_affinity
-        + 0.3 * genre_affinity
-        + 0.2 * acoustic_affinity_val
-        + 0.1 * direct_match) as f64
+    let engagement = engagement_score(track, history);
+    let acoustic = acoustic_affinity_score(track, track_profiles, user_acoustic);
+    (0.6 * engagement + 0.4 * acoustic) as f64
 }
 
-fn artist_affinity_score(track: &Track, history: &[TrackListeningStats]) -> f64 {
+/// Interacción directa del usuario con el track: frecuencia × recencia.
+///
+/// ```text
+/// engagement = normalized_plays · recency
+/// normalized_plays = log1p(play_count) / log1p(max_history_plays)
+/// recency = exp(-λ · days_since_last_played)
+/// ```
+///
+/// Un 1.0 solo si el track es (a la vez) de los más escuchados y reciente.
+/// La normalización log evita que un single muy escuchado eclipsen al resto.
+fn engagement_score(track: &Track, history: &[TrackListeningStats]) -> f64 {
     if history.is_empty() {
         return 0.0;
     }
-    let track_artist_names: Vec<&str> = track
-        .artists
-        .iter()
-        .map(|a| a.name.as_str())
-        .collect();
-    if track_artist_names.is_empty() {
-        return 0.0;
-    }
-
-    let mut artist_plays: HashMap<String, i64> = HashMap::new();
-    let mut total_plays: i64 = 0;
+    let key = track.identifier();
+    let mut play_count = 0i64;
+    let mut last_played: Option<&str> = None;
+    let mut max_plays = 1i64;
     for entry in history {
-        if let Some(ref name) = entry.artist_name {
-            *artist_plays.entry(name.clone()).or_insert(0) += entry.play_count;
-            total_plays += entry.play_count;
+        if entry.play_count > max_plays {
+            max_plays = entry.play_count;
+        }
+        if entry.key == key {
+            play_count += entry.play_count;
+            if last_played.is_none() {
+                last_played = Some(&entry.last_played);
+            }
         }
     }
-    if total_plays == 0 {
+    if play_count <= 0 {
         return 0.0;
     }
-
-    let matching_plays: i64 = track_artist_names
-        .iter()
-        .filter_map(|name| artist_plays.get(*name).copied())
-        .sum();
-
-    matching_plays as f64 / total_plays as f64
-}
-
-fn genre_affinity_score(track: &Track, history: &[TrackListeningStats]) -> f64 {
-    if history.is_empty() {
-        return 0.0;
-    }
-    let track_genre_names: Vec<&str> = track.genres.iter().map(|g| g.name.as_str()).collect();
-    if track_genre_names.is_empty() {
-        return 0.0;
-    }
-
-    // Contar plays por género usando el nombre del artista como proxy
-    let mut genre_plays: HashMap<String, i64> = HashMap::new();
-    let mut total_plays: i64 = 0;
-    for entry in history {
-        if let Some(ref name) = entry.artist_name {
-            *genre_plays.entry(name.clone()).or_insert(0) += entry.play_count;
-            total_plays += entry.play_count;
-        }
-    }
-    if total_plays == 0 {
-        return 0.0;
-    }
-
-    let matching_plays: i64 = track_genre_names
-        .iter()
-        .filter_map(|name| genre_plays.get(*name).copied())
-        .sum();
-
-    matching_plays as f64 / total_plays as f64
+    let normalized = (play_count as f64 + 1.0).ln_1p() / (max_plays as f64 + 1.0).ln_1p();
+    let recency = last_played
+        .map(|lp| recency_bonus(days_since(lp)))
+        .unwrap_or(0.0);
+    (normalized * recency).clamp(0.0, 1.0)
 }
 
 fn acoustic_affinity_score(
@@ -102,14 +86,13 @@ fn acoustic_affinity_score(
     if user_acoustic.weight_sum < f32::EPSILON {
         return 0.0;
     }
-    // Buscar el perfil acústico del track directamente o en el mapa
-    let profile = if let Some(p) = track_profiles.get(&track.id) {
-        p.clone()
-    } else {
-        return 0.5;
+    let profile = match track_profiles.get(&track.id) {
+        Some(p) => p,
+        // Sin perfil acústico del track, no podemos afirmar afinidad acústica.
+        None => return 0.0,
     };
 
-    let track_vec = crate::recommendation::types::FeatureVector::from_profile(&profile);
+    let track_vec = crate::recommendation::types::FeatureVector::from_profile(profile);
     let user_vec = user_acoustic.to_vector();
 
     let mag_t = track_vec.magnitude();
@@ -119,26 +102,6 @@ fn acoustic_affinity_score(
         return 0.0;
     }
 
-    let dot = track_vec.dot(&user_vec);
-    let cosine = dot / (mag_t * mag_u);
+    let cosine = track_vec.dot(&user_vec) / (mag_t * mag_u);
     cosine.clamp(0.0, 1.0) as f64
-}
-
-fn direct_match_score(track: &Track, history: &[TrackListeningStats]) -> f64 {
-    if history.is_empty() {
-        return 0.0;
-    }
-    let key = track.identifier();
-    for entry in history {
-        if entry.key == key {
-            if entry.recently_played && entry.play_count >= 2 {
-                return 1.0;
-            }
-            if entry.play_count >= 2 {
-                return 0.8;
-            }
-            return 0.5;
-        }
-    }
-    0.0
 }

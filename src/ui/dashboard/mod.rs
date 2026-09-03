@@ -68,6 +68,7 @@ pub fn render(
             chunks[1],
             visual,
             playback.position.as_secs_f32(),
+            track_palette(playback, thumbnails),
         );
     }
     progress_bar::render(frame, chunks[2], playback, frame_anim);
@@ -104,6 +105,7 @@ fn render_controls(
         PlaybackState::Paused => "⏸ pausado",
         PlaybackState::Stopped => "⏹ detenido",
         PlaybackState::Buffering => "⏳ preparando",
+        PlaybackState::Seeking => "🎚 buscando",
     };
     let stall = if playback.stalled {
         format!(
@@ -141,4 +143,20 @@ fn render_controls(
         Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" Controles ")),
         area,
     );
+}
+
+/// Paleta de tres colores dominantes de la portada del track en curso, si la
+/// miniatura ya está decodificada. Se usa para colorear las barras del visual.
+fn track_palette(
+    playback: &PlaybackStatus,
+    thumbnails: &std::collections::HashMap<String, ThumbnailState>,
+) -> Option<[[u8; 3]; 3]> {
+    playback
+        .track
+        .as_ref()
+        .and_then(|t| thumbnails.get(&t.identifier()))
+        .and_then(|state| match state {
+            ThumbnailState::Loaded(img) => img.palette,
+            _ => None,
+        })
 }

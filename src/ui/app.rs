@@ -231,7 +231,7 @@ impl App {
     fn animation_active(&self) -> bool {
         matches!(
             self.playback.state,
-            PlaybackState::Playing | PlaybackState::Buffering
+            PlaybackState::Playing | PlaybackState::Buffering | PlaybackState::Seeking
         )
     }
 
@@ -336,7 +336,17 @@ impl App {
                 // que el karaoke debe seguir ese reloj real (lo re-ancla
                 // `update_karaoke_clock` con cada muestra).
                 self.clock.begin_seek(std::time::Duration::from_secs(secs));
-                let _ = self.backend_tx.send(BackendCommand::Seek(secs));
+                // Guarda de sesión (FASE 4): etiquetamos el seek con el track
+                // en curso. Si al ejecutarse (la orden es asíncrona y puede
+                // bloquear descargando la región del salto) el usuario ya
+                // reprodujo otra canción, el backend lo descarta para no
+                // saltar dentro de la canción nueva.
+                let for_track = self
+                    .now_playing
+                    .as_ref()
+                    .map(|t| t.identifier())
+                    .unwrap_or_default();
+                let _ = self.backend_tx.send(BackendCommand::Seek(secs, for_track));
             }
             // Navegación de recomendaciones: vista Related (lista completa) y
             // el panel de la vista Now Playing comparten `related.list_state`.
@@ -658,6 +668,35 @@ impl App {
                 }
                 self.status = Some(format!("Reproducción: {err}"));
             }
+            // Seek iniciado: estado transitorio "buscando". No movemos el reloj
+            // (el audio real sigue donde estaba) ni la UI del karaoke: solo
+            // flota el estado para que el usuario vea que el salto está en
+            // marcha.
+            BackendEvent::SeekStarted => {
+                self.playback.state = PlaybackState::Seeking;
+            }
+            // Seek CONFIRMADO por el backend: el audio real ya está en el
+            // objetivo. Re-anclamos el reloj al objetivo elegido y limpiamos el
+            // deseo pendiente — sin depender de que una muestra del motor
+            // coincida.
+            BackendEvent::SeekCompleted => {
+                let now = std::time::Instant::now();
+                self.clock.confirm_seek(now);
+                // Restablece el estado de reproducción real (pausado o
+                // reproduciendo) según lo que indique el siguiente tick del
+                // motor; si fue un seek mientras se reproducía, queda Playing.
+                if self.playback.state != PlaybackState::Paused {
+                    self.playback.state = PlaybackState::Playing;
+                }
+            }
+            // Seek FALLIDO: el audio NO cambió. Cancelamos el deseo pendiente
+            // para que el reloj siga al audio real que nunca se movió.
+            BackendEvent::SeekFailed => {
+                self.clock.cancel_pending_seek();
+                self.status = Some(
+                    "No se pudo buscar la posición (stream no busca hacia atrás).".to_string(),
+                );
+            }
             // Errores de stream en caliente: no tocan la línea de estado; van
             // al pie de página discreto (abajo a la derecha) con caducidad.
             BackendEvent::StreamError(err) => {
@@ -768,6 +807,7 @@ impl App {
             PlaybackState::Paused => "⏸ pausado",
             PlaybackState::Stopped => "⏹ detenido",
             PlaybackState::Buffering => "⏳ preparando",
+            PlaybackState::Seeking => "🎚 buscando",
         };
         let track = self
             .playback
@@ -813,6 +853,14 @@ impl App {
             View::Related => {
                 let palette = self.cover_palette();
                 let position = self.karaoke_now();
+                // Mismo cálculo de frescura que Now Playing: si el visual va a
+                // ocupar el espacio de las letras (cuando no las hay), sus
+                // barras reflejan el análisis actual (o quedan inactivas).
+                let fresh = self
+                    .features_at
+                    .filter(|t| t.elapsed() < std::time::Duration::from_millis(900))
+                    .and_then(|_| self.features.clone());
+                let visual = self.visual.update(fresh.as_ref(), position);
                 related::render(
                     frame,
                     area,
@@ -823,6 +871,7 @@ impl App {
                     // al superar la última línea del LRC.
                     self.playback.state == PlaybackState::Stopped,
                     palette,
+                    &visual,
                     &self.mouse_pos,
                     &mut self.mouse_click,
                     &self.listening_stats,
@@ -1643,7 +1692,59 @@ use crate::app::audio::{PlaybackState, PlaybackStatus};
         // que el motor ejecute el salto y confirme la nueva posición.
         assert_eq!(app.clock.position(), Duration::from_secs(5));
         assert_eq!(app.clock.pending_seek().map(|s| s.target), Some(Duration::ZERO));
-        assert!(matches!(rx.try_recv(), Ok(BackendCommand::Seek(0))));
+        assert!(matches!(rx.try_recv(), Ok(BackendCommand::Seek(0, _))));
+    }
+
+    #[test]
+    fn seek_completed_event_confirms_the_clock_without_waiting_for_a_sample() {
+        let (tx, _rx) = unbounded_channel::<BackendCommand>();
+        let mut app = App::new(tx);
+        let track = rec_track("song-1");
+        app.on_backend(BackendEvent::PlaybackStarted {
+            status: PlaybackStatus {
+                track: Some(track.clone()),
+                state: PlaybackState::Playing,
+                position: Duration::from_secs(100),
+                duration: None,
+                stalled: false,
+            },
+            stats: vec![],
+        });
+        // El usuario pide retroceder a 20s.
+        app.clock.begin_seek(Duration::from_secs(20));
+        app.on_backend(BackendEvent::SeekStarted);
+        assert_eq!(app.playback.state, PlaybackState::Seeking);
+        // El audio real aún no se movió (el karaoke sigue en 100s).
+        assert_eq!(app.clock.position(), Duration::from_secs(100));
+
+        // Backend confirma el salto REAL: el reloj se ancla en el objetivo.
+        app.on_backend(BackendEvent::SeekCompleted);
+        assert_eq!(app.clock.position(), Duration::from_secs(20));
+        assert!(app.clock.pending_seek().is_none(), "seek confirmado");
+        assert_eq!(app.playback.state, PlaybackState::Playing);
+    }
+
+    #[test]
+    fn seek_failed_event_cancels_pending_seek_and_keeps_real_position() {
+        let (tx, _rx) = unbounded_channel::<BackendCommand>();
+        let mut app = App::new(tx);
+        let track = rec_track("song-1");
+        app.on_backend(BackendEvent::PlaybackStarted {
+            status: PlaybackStatus {
+                track: Some(track.clone()),
+                state: PlaybackState::Playing,
+                position: Duration::from_secs(90),
+                duration: None,
+                stalled: false,
+            },
+            stats: vec![],
+        });
+        app.clock.begin_seek(Duration::from_secs(10));
+
+        // El backend no pudo buscar hacia atrás: el audio sigue en 90s.
+        app.on_backend(BackendEvent::SeekFailed);
+        assert!(app.clock.pending_seek().is_none(), "deseo pendiente cancelado");
+        assert_eq!(app.clock.position(), Duration::from_secs(90), "audio sin mover");
     }
 
     #[test]

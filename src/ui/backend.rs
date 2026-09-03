@@ -18,6 +18,10 @@ use crate::infrastructure::config::{Config, ConfigForm};
 use crate::infrastructure::db::Db;
 use crate::infrastructure::playback;
 use crate::playback::{QueueManager, RecoveryAction, RecoveryBudget, decide_recovery};
+use crate::recommendation::acoustic_aggregator::AcousticAggregator;
+use crate::recommendation::signals::{PlayContext, SignalKind};
+use crate::recommendation::types::UserProfile;
+use crate::recommendation::{aggregate_signals, metadata_similarity, negative_penalty, user_affinity};
 
 use super::event::BackendEvent;
 
@@ -37,8 +41,11 @@ pub enum BackendCommand {
     Resume,
     Toggle,
     Stop,
-    /// Busca una posición (en segundos).
-    Seek(u64),
+    /// Busca una posición (en segundos). Lleva el identificador del track
+    /// sobre el que se emitió: si al ejecutarse el track en curso cambió (el
+    /// usuario reprodujo otra canción), el seek se Descarta para no saltar
+    /// dentro de la canción nueva.
+    Seek(u64, String),
     /// Cambia el volumen (0-100).
     Volume(u8),
     /// Pide letra sincronizada (LRCLIB) y recomendados de un video.
@@ -91,6 +98,13 @@ pub struct Backend {
     queue: Arc<tokio::sync::Mutex<QueueManager>>,
     /// Track en curso (para recuperación en caliente).
     current: Arc<tokio::sync::Mutex<Option<Track>>>,
+    /// Contexto en que se inició el track en curso (Manual/Queue/Autoplay/
+    /// Recommendation). Permite registrar `skip`/`completed` con la semántica
+    /// correcta al cambiar de canción (FASE 10/11).
+    current_context: Arc<tokio::sync::Mutex<Option<PlayContext>>>,
+    /// Acumulador acústico del track en curso: reduce los frames en vivo a un
+    /// perfil que se persiste al terminar la reproducción (FASE 8).
+    acoustic_since: Arc<tokio::sync::Mutex<Option<AcousticAggregator>>>,
     /// Presupuesto de auto-recuperación: UN refresco de stream por track.
     recovery_budget: Arc<tokio::sync::Mutex<RecoveryBudget>>,
     /// Preparación anticipada del SIGUIENTE track (warm de caché).
@@ -103,6 +117,13 @@ impl Backend {
     /// `true` si hay que emitir eventos de features hacia la UI.
     fn visuals_enabled(&self) -> bool {
         self.config.flags.advanced_visualization && self.features.is_some()
+    }
+
+    /// Guarda de sesión (FASE 4): un seek es obsoleto si el track sobre el que
+    /// se emitió ya no es el que está en curso (o no hay ninguno). Evita que un
+    /// seek asíncrono de la canción A salte dentro de la canción B.
+    fn seek_is_stale(current: Option<&Track>, for_track: &str) -> bool {
+        current.is_none_or(|t| t.identifier() != *for_track)
     }
 }
 
@@ -147,6 +168,8 @@ impl Backend {
             autoplay: Arc::new(tokio::sync::Mutex::new(true)),
             queue: Arc::new(tokio::sync::Mutex::new(QueueManager::default())),
             current: Arc::new(tokio::sync::Mutex::new(None)),
+            current_context: Arc::new(tokio::sync::Mutex::new(None)),
+            acoustic_since: Arc::new(tokio::sync::Mutex::new(None)),
             recovery_budget: Arc::new(tokio::sync::Mutex::new(RecoveryBudget::default())),
             preload,
             features,
@@ -189,9 +212,14 @@ impl Backend {
     /// Arranca una reproducción y solo después la hace visible como escucha
     /// persistente. El estado devuelto usa la duración que confirmó el
     /// decodificador cuando los metadatos del listado no la traían.
+    ///
+    /// `context` es la semántica de la interacción (Manual/Queue/Autoplay/
+    /// Recommendation): se registra como señal `Play` y se recuerda para
+    /// clasificar el `completed`/`skip` posterior (FASE 10/11).
     async fn start_and_record(
         &self,
         track: Track,
+        context: PlayContext,
     ) -> Result<
         (
             PlaybackStatus,
@@ -204,6 +232,7 @@ impl Backend {
         let key = track.identifier();
         self.queue.lock().await.mark_played(&key);
         *self.current.lock().await = Some(track.clone());
+        *self.current_context.lock().await = Some(context);
         self.recovery_budget.lock().await.arm(&key);
 
         let mut status = self.play_track(&track).await?;
@@ -222,10 +251,38 @@ impl Backend {
             .save_track(&persisted, &ids)
             .await
             .map_err(|e| format!("guardar escucha: {e}"))?;
+
+        // Señal real de interacción (FASE 11): un `Play` por contexto. La
+        // duración total del track se conserva para normalizar completed/skip.
+        let _ = self
+            .db
+            .record_signal(
+                internal_id,
+                SignalKind::Play,
+                context,
+                None,
+                None,
+                persisted.duration.map(|d| d.as_millis() as i64),
+            )
+            .await;
+
+        // Nuevo acumulador acústico para esta reproducción (FASE 8): los
+        // frames que lleguen vía el bus de features se agregan aquí y, al
+        // terminar, se persisten como perfil del track.
+        *self.acoustic_since.lock().await = Some(AcousticAggregator::new(internal_id));
+
         self.history
             .record(internal_id, persisted.source, persisted.duration)
             .await
             .map_err(|e| format!("historial: {e}"))?;
+        // El track en curso conserva su id interno: otros consumidores (p. ej.
+        // la clasificación de un `skip`) leen un `track_id` estable.
+        if let Some(t) = self.current.lock().await.as_mut() {
+            t.id = internal_id;
+            if t.duration.is_none() {
+                t.duration = persisted.duration;
+            }
+        }
         let stats = self
             .history
             .stats()
@@ -359,10 +416,17 @@ impl Backend {
                     Err(e) => Some(BackendEvent::Error(format!("guardar: {e}"))),
                 }
             }
-            BackendCommand::Play(track) => match self.start_and_record(*track).await {
-                Ok((status, stats)) => Some(BackendEvent::PlaybackStarted { status, stats }),
-                Err(e) => Some(BackendEvent::PlaybackError(e)),
-            },
+            BackendCommand::Play(track) => {
+                // El usuario eligió explícitamente reproducir: contexto Manual.
+                // (Los contextos Queue/Autoplay salen de `skip_track` y
+                // `autoplay_next`.)
+                match self.start_and_record(*track, PlayContext::Manual).await {
+                    Ok((status, stats)) => {
+                        Some(BackendEvent::PlaybackStarted { status, stats })
+                    }
+                    Err(e) => Some(BackendEvent::PlaybackError(e)),
+                }
+            }
             BackendCommand::NextTrack => match self.skip_track(true).await {
                 Ok(Some((status, stats))) => Some(BackendEvent::PlaybackStarted { status, stats }),
                 Ok(None) => None,
@@ -410,6 +474,10 @@ impl Backend {
                         let _ = self.db.cache_synced_lyrics(id, s).await;
                     }
                 }
+                // Reordena/filtra los recomendados por el gusto local del
+                // usuario (FASE 9/10): lo que encaja con su perfil sube y lo
+                // que rechazó claramente baja o se descarta.
+                self.reorder_by_local_taste(&mut related).await;
                 Some(BackendEvent::Related {
                     track: Box::new(track),
                     related,
@@ -425,10 +493,20 @@ impl Backend {
             // `Seek` puede bloquear hasta que la región objetivo del stream
             // quede descargada (streams HTTP progresivos): fuera del loop para
             // no congelar los controles durante un salto hacia delante.
-            BackendCommand::Seek(secs) => match self.router.seek(Duration::from_secs(secs)).await {
-                Ok(status) => Some(BackendEvent::Playback(status)),
-                Err(e) => Some(BackendEvent::PlaybackError(e.to_string())),
-            },
+            // Guarda de sesión (FASE 4): si mientras tanto arrancó otra
+            // canción (el track en curso ya no coincide con este seek) la
+            // operación es obsoleta y debe descartarse — de otro modo saltaría
+            // dentro de la canción nueva.
+            BackendCommand::Seek(secs, for_track) => {
+                let stale = Self::seek_is_stale(self.current.lock().await.as_ref(), &for_track);
+                if stale {
+                    return None;
+                }
+                match self.router.seek(Duration::from_secs(secs)).await {
+                    Ok(status) => Some(BackendEvent::Playback(status)),
+                    Err(e) => Some(BackendEvent::PlaybackError(e.to_string())),
+                }
+            }
             // ------------------------------------------------------ playlists
             BackendCommand::ListPlaylists => match self.db.list_playlists().await {
                 Ok(pls) => Some(BackendEvent::Playlists(pls)),
@@ -497,10 +575,123 @@ impl Backend {
         let Some(next) = next else {
             return Err("Sin cola de recomendaciones. Reproduce una canción para cargarlas.".to_string());
         };
-        match self.start_and_record(next).await {
+        // El usuario saltó la canción que estaba sonando: se registra como señal
+        // `Skip` (con el contexto en que se reprodujo) ANTES de pisar el track
+        // en curso con la siguiente (FASE 11). El autoplay no genera aversión:
+        // lo filtra `is_meaningful_negative`.
+        self.record_skip().await;
+        match self.start_and_record(next, PlayContext::Queue).await {
             Ok(result) => Ok(Some(result)),
             Err(e) => Err(format!("salto: {e}")),
         }
+    }
+
+    /// Registra una señal `Skip` para el track en curso, si hay uno y su id
+    /// interno es conocido. Se usa al saltar manualmente la canción.
+    async fn record_skip(&self) {
+        let (track_id, ctx) = {
+            let track = self.current.lock().await.clone();
+            let ctx = *self.current_context.lock().await;
+            (track.and_then(|t| (t.id > 0).then_some(t.id)), ctx)
+        };
+        let Some(track_id) = track_id else { return };
+        let _ = self
+            .db
+            .record_signal(track_id, SignalKind::Skip, ctx.unwrap_or(PlayContext::Manual), None, None, None)
+            .await;
+    }
+
+    /// Al terminar una canción: registra la señal `Completed` (se escuchó
+    /// completa) y persiste el perfil acústico acumulado durante la
+    /// reproducción (FASE 8). Ambos fallos son no-críticos.
+    async fn record_completed_and_persist_acoustic(&self) {
+        let (track_id, ctx, duration_ms) = {
+            let track = self.current.lock().await.clone();
+            let ctx = *self.current_context.lock().await;
+            (
+                track.as_ref().and_then(|t| (t.id > 0).then_some(t.id)),
+                ctx,
+                track.as_ref().and_then(|t| t.duration).map(|d| d.as_millis() as i64),
+            )
+        };
+        if let Some(track_id) = track_id {
+            // `Completed` implica duración completa: duration == track_duration
+            // para que `is_completion()` sea cierto y la señal pese positivo.
+            if let Some(ms) = duration_ms {
+                let _ = self
+                    .db
+                    .record_signal(
+                        track_id,
+                        SignalKind::Completed,
+                        ctx.unwrap_or(PlayContext::Manual),
+                        Some(ms),
+                        None,
+                        Some(ms),
+                    )
+                    .await;
+            }
+            // Perfil acústico: si hubo suficientes frames, se persiste para
+            // que el ranking local pueda comparar por sonido sin re-analizar.
+            let profile = self.acoustic_since.lock().await.take().and_then(|a| a.into_profile());
+            if let Some(p) = profile {
+                let _ = self.db.save_acoustic_profile(&p).await;
+            }
+        }
+    }
+
+    /// Reordena y filtra una lista de recomendados por el gusto LOCAL del
+    /// usuario (FASE 9/10). Sin datos de interacción la lista se deja tal cual
+    /// (mantiene el orden de YouTube). Con datos, lo que encaja con el perfil
+    /// sube y lo que el usuario rechazó claramente se descarta.
+    ///
+    /// Falla silencioso: si algo no se puede cargar (red de señales, acústica)
+    /// se conserva la lista original — el descubrimiento siempre funciona.
+    async fn reorder_by_local_taste(&self, related: &mut Vec<Track>) {
+        let Ok(signals) = self.db.all_signals(20_000).await else { return };
+        if signals.is_empty() {
+            return;
+        }
+        let (Ok(all_tracks), Ok(acoustic_profiles)) =
+            (self.db.all_tracks().await, self.db.all_acoustic_profiles().await)
+        else {
+            return;
+        };
+        let mut tracks_map = HashMap::new();
+        for t in &all_tracks {
+            tracks_map.insert(t.id, t.clone());
+        }
+        let profile = UserProfile::from_signals(&signals, &tracks_map, &acoustic_profiles);
+        let signals_by_track = aggregate_signals(&signals);
+        let history = self.history.stats().await.ok();
+
+        let mut scored: Vec<(Track, f64, crate::recommendation::types::TrackSignals)> = Vec::new();
+        for mut t in related.drain(..) {
+            // Resuelve el id interno del candidato para consultar su señal y
+            // su perfil acústico (los candidatos frescos de YouTube llegan con
+            // `id == 0`).
+            let internal = match t.external_id.as_deref() {
+                Some(ext) => self.db.internal_id_for_external(ext).await.ok().flatten(),
+                None => None,
+            };
+            if let Some(id) = internal {
+                t.id = id;
+            }
+            let meta = metadata_similarity(&t, &profile);
+            let affinity = match &history {
+                Some(h) => user_affinity(&t, h, &profile.acoustic_profile, &acoustic_profiles),
+                None => 0.0,
+            };
+            let sig = signals_by_track.get(&t.id).copied().unwrap_or_default();
+            let negative = negative_penalty(sig.negative, sig.plays);
+            let local = (0.5 * meta + 0.5 * affinity) * negative;
+            scored.push((t, local, sig));
+        }
+        // Solo se descarta lo que el usuario rechazó CLARAMENTE: al menos dos
+        // negativas y en número >= los intentos. Un único skip (o un skip de
+        // autoplay, que ya filtra `aggregate_signals`) no elimina un track.
+        scored.retain(|(_, _, sig)| !(sig.negative >= 2 && sig.negative >= sig.plays.max(1)));
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        related.extend(scored.into_iter().map(|(t, _, _)| t));
     }
 
     /// Reproduce la siguiente recomendación si el autoplay está activo.
@@ -529,7 +720,7 @@ impl Backend {
         }
         let next = self.queue.lock().await.pick(true, finished_after.as_deref())
             .ok_or_else(|| "sin siguiente recomendación".to_string())?;
-        match self.start_and_record(next).await {
+        match self.start_and_record(next, PlayContext::Autoplay).await {
             Ok(result) => Ok(Some(result)),
             Err(e) => Err(format!("autoplay: {e}")),
         }
@@ -636,6 +827,9 @@ pub fn spawn_backend(
                             let _ = event_tx.send(BackendEvent::Playback(
                                 PlaybackStatus::idle(),
                             ));
+                            // La canción terminó naturalmente: señal `Completed`
+                            // y persistencia del perfil acústico acumulado.
+                            backend.record_completed_and_persist_acoustic().await;
                             // El autoplay reproduce la siguiente canción (con
                             // su prebuffer): fuera del loop para no bloquear.
                             let backend = backend.clone();
@@ -669,8 +863,7 @@ pub fn spawn_backend(
                                 }
                             });
                         }
-                        Ok(PlaybackEvent::Error(msg)) => {
-                            // Errores en caliente: primero se intenta la
+                        Ok(PlaybackEvent::Error(msg)) => {                            // Errores en caliente: primero se intenta la
                             // recuperación acotada (UN refresco por track);
                             // si no procede o falla, queda el aviso ORIGINAL
                             // como pie discreto.
@@ -716,10 +909,32 @@ pub fn spawn_backend(
                                 let _ = event_tx.send(BackendEvent::StreamError(msg));
                             }
                         }
+                        // Estado de seek: lo reenviamos para que la UI confirme
+                        // o cancele el reloj sin depender de heurísticas.
+                        Ok(PlaybackEvent::SeekStarted) => {
+                            let _ = event_tx.send(BackendEvent::SeekStarted);
+                        }
+                        Ok(PlaybackEvent::SeekCompleted) => {
+                            let _ = event_tx.send(BackendEvent::SeekCompleted);
+                        }
+                        Ok(PlaybackEvent::SeekFailed) => {
+                            let _ = event_tx.send(BackendEvent::SeekFailed);
+                        }
                         _ => {}
                     }
                 }
                 _ = visual_ticker.tick() => {
+                    // Agregación acústica del track en curso: se alimenta
+                    // SIEMPRE que haya features (independientemente del switcher
+                    // de visualización) para poder persistir el perfil al
+                    // terminar (FASE 8).
+                    if let Some(bus) = backend.features() {
+                        if let Some(f) = bus.latest() {
+                            if let Some(agg) = backend.acoustic_since.lock().await.as_mut() {
+                                agg.add(&f);
+                            }
+                        }
+                    }
                     if backend.visuals_enabled() {
                         if let Some(bus) = backend.features() {
                             if let Some(f) = bus.latest() {
@@ -777,7 +992,7 @@ fn is_heavy(cmd: &BackendCommand) -> bool {
             | BackendCommand::PrevTrack
             | BackendCommand::LoadRelated(_)
             | BackendCommand::Thumbnail(_)
-            | BackendCommand::Seek(_)
+            | BackendCommand::Seek(..)
             | BackendCommand::ListPlaylists
             | BackendCommand::CreatePlaylist(_)
             | BackendCommand::RenamePlaylist(..)
@@ -792,6 +1007,21 @@ fn is_heavy(cmd: &BackendCommand) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn rec_track_generic(title: &str) -> Track {
+        let mut t = Track::new(
+            title.to_string(),
+            vec![crate::domain::artist::Artist::new(
+                "Banda".to_string(),
+                None,
+                None,
+                None,
+            )],
+            crate::domain::source::Source::YouTube,
+        );
+        t.external_id = Some(title.to_string());
+        t
+    }
 
     // La navegación de la cola (avance, wrap, ancla desconocida, shuffle,
     // repeat) se cubre exhaustivamente en `playback::queue::tests`.
@@ -828,5 +1058,23 @@ mod tests {
         budget.arm("song");
         assert!(budget.try_consume("song"));
         assert!(!budget.try_consume("song"), "un solo refresco por track");
+    }
+
+    /// FASE 4: un seek es obsoleto si el track en curso ya no coincide con el
+    /// que lo emitió. El caso `A → seek → B` (el seek llegó tarde, después de
+    /// reproducir B) debe DESCARTAR el seek para no saltar dentro de B.
+    #[test]
+    fn stale_seek_after_track_change_is_discarded() {
+        let a = rec_track_generic("song-a");
+        let b = rec_track_generic("song-b");
+
+        // Seek emitido mientras sonaba `song-a`... válido.
+        assert!(!Backend::seek_is_stale(Some(&a), &a.identifier()));
+        // ...pero llega cuando `song-b` ya está en curso: obsoleto.
+        assert!(Backend::seek_is_stale(Some(&b), &a.identifier()));
+        // Sin track en curso (p. ej. detenido): no hay dónde saltar.
+        assert!(Backend::seek_is_stale(None, &a.identifier()));
+        // El mismo track sigue siendo válido.
+        assert!(!Backend::seek_is_stale(Some(&b), &b.identifier()));
     }
 }

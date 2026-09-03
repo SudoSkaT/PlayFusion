@@ -22,6 +22,11 @@ pub enum PlaybackState {
     Buffering,
     Playing,
     Paused,
+    /// Se está ejecutando un seek en el backend. El audio real puede seguir
+    /// sonando desde la posición anterior mientras se pre-descarga la región
+    /// objetivo; el estado se considera transitorio hasta que llega
+    /// `SeekCompleted` o `SeekFailed`.
+    Seeking,
 }
 
 /// Snapshot del estado actual de reproducción para la UI.
@@ -57,6 +62,13 @@ pub enum PlaybackEvent {
     Playing,
     /// La reproducción está en pausa.
     Paused,
+    /// Comenzó a ejecutarse un seek (el backend está buscando la región).
+    SeekStarted,
+    /// Un seek se completó con éxito: el audio real quedó en la posición
+    /// objetivo.
+    SeekCompleted,
+    /// Un seek falló: el audio real NO cambió de posición.
+    SeekFailed,
     /// La canción terminó.
     Finished,
     /// El servidor restringió/cerró el stream en caliente (p. ej. techo

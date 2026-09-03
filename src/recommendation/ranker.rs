@@ -7,15 +7,31 @@ use crate::infrastructure::storage::TrackListeningStats;
 use crate::recommendation::{metadata_similarity, user_affinity, popularity_factor, negative_penalty, recency_bonus};
 use crate::recommendation::scoring::acoustic::acoustic_similarity_to_profile;
 use crate::recommendation::scoring::recency::days_since;
-use crate::recommendation::types::{RecommendationScore, TrackAcousticProfile, UserProfile};
+use crate::recommendation::types::{RecommendationScore, TrackAcousticProfile, TrackSignals, UserProfile};
 
 /// Pesos del pipeline (suman 1.0).
+///
+/// Justificación:
+/// - `affinity` (0.30): la señal más personal — cómo se relaciona el track con
+///   lo que el usuario ya escuchó (artista/género/acústico). Es "recomendado
+///   para ti", no popularidad global.
+/// - `meta` (0.25): la similitud de metadata (artista, género, álbum, año) es
+///   la forma más robusta de descubrir contenido parecido si faltan perfiles
+///   acústicos.
+/// - `acoustic` (0.20): la similitud acústica real (features que PlayFusion ya
+///   analiza) refina el resultado, pero pesa menos que la afinidad porque el
+///   perfil acústico del usuario y de los tracks puede estar incompleto.
+/// - `recency` (0.15): favorece lo escuchado hace poco (interés vigente) sobre
+///   lo antiguo; evita recomendaciones "congeladas" en el pasado.
+/// - `popularity` (0.10): desempate suave. Conscientemente BAJA: un track muy
+///   popular no debe eclipsar lo que encaja con el gusto (diferencia entre
+///   "popular" y "recomendado para este usuario").
 pub const WEIGHTS: ScoringWeights = ScoringWeights {
     meta: 0.25,
-    acoustic: 0.25,
+    acoustic: 0.20,
     affinity: 0.30,
-    recency: 0.10,
-    popularity: 0.05,
+    recency: 0.15,
+    popularity: 0.10,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -45,11 +61,15 @@ impl ScoringWeights {
 }
 
 /// Genera recomendaciones para un usuario a partir de un catálogo.
+///
+/// `signals`: agregados por track (plays / negativos) para la penalización
+/// negativa basada en señales reales, no en play-count.
 pub async fn rank(
     candidates: &[Track],
     profile: &UserProfile,
     history: &[TrackListeningStats],
     acoustic_profiles: &HashMap<i64, TrackAcousticProfile>,
+    signals: &HashMap<i64, TrackSignals>,
 ) -> Vec<RecommendationScore> {
     let max_play_count = history
         .iter()
@@ -79,10 +99,9 @@ pub async fn rank(
             track_history.iter().map(|h| h.play_count).sum::<i64>(),
             max_play_count,
         );
-        let negative = negative_penalty(
-            track_history.first().map_or(0, |h| h.play_count),
-            track.duration.map(|d| d.as_millis() as i64).unwrap_or(0),
-        );
+        // Señales negativas REALES (skips detectados / unlikes) sobre intentos.
+        let sig = signals.get(&track.id).copied().unwrap_or_default();
+        let negative = negative_penalty(sig.negative, sig.plays);
 
         let raw = WEIGHTS.weighted_sum(meta, acoustic, affinity, recency, popularity);
         let final_score = raw * negative;
@@ -133,6 +152,6 @@ mod tests {
     fn weights_sum_to_one() {
         let w = WEIGHTS;
         let total = w.meta + w.acoustic + w.affinity + w.recency + w.popularity;
-        assert!((total - 0.95).abs() < 1e-10, "pesos deben sumar 0.95: {total}");
+        assert!((total - 1.0).abs() < 1e-10, "pesos deben sumar 1.0: {total}");
     }
 }

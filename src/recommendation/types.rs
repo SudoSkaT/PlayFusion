@@ -6,6 +6,8 @@
 //! `RecommendationScore` — puntuación final con componentes desglosados.
 //! `ScoreComponents` — desglose de cada componente del scoring.
 
+use std::collections::{HashMap, HashSet};
+
 use crate::domain::source::Source;
 use crate::domain::track::Track;
 
@@ -144,26 +146,38 @@ impl ScoreComponents {
     }
 }
 
-/// Perfil musical del usuario derivado del historial de reproducción.
+/// Perfil musical del usuario derivado de los eventos de interacción (FASE 10).
 #[derive(Debug, Clone, Default)]
 pub struct UserProfile {
-    // ── Metadata ──
+    // ── Metadata (pesado por la calidad de la señal) ──
     pub favorite_artists: Vec<String>,
     pub favorite_genres: Vec<String>,
     pub favorite_albums: Vec<i64>,
     pub favorite_decades: Vec<i64>,
     pub favorite_tags: Vec<String>,
 
-    // ── Features acústicos (promedio ponderado por completion_rate) ──
+    // ── Features acústicos (promedio ponderado por el peso de la señal) ──
     pub acoustic_profile: AcousticProfile,
 
-    // ── Historial de señales ──
+    // ── Historial de señales (diferenciadas, no mezcladas) ──
     pub total_plays: u64,
-    pub total_skips: u64,
     pub total_completions: u64,
-    pub tracks_played: Vec<i64>,
-    pub tracks_completed: Vec<i64>,
-    pub tracks_skipped: Vec<i64>,
+    pub total_skips: u64,
+    pub total_replays: u64,
+    pub total_likes: u64,
+    /// Peso acumulado de todas las señales (para normalizar afinidades).
+    pub total_weight: f32,
+    pub tracks_played: HashSet<i64>,
+    pub tracks_completed: HashSet<i64>,
+    pub tracks_skipped: HashSet<i64>,
+    pub tracks_replayed: HashSet<i64>,
+
+    // Acumuladores internos para ordenar favoritos por peso.
+    pub(crate) _artist_w: HashMap<String, f32>,
+    pub(crate) _genre_w: HashMap<String, f32>,
+    pub(crate) _album_w: HashMap<i64, f32>,
+    pub(crate) _decade_w: HashMap<i64, f32>,
+    pub(crate) _tag_w: HashMap<String, f32>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -241,4 +255,13 @@ pub struct HistoryPlayEvent {
     pub duration: Option<i64>,
     pub track_duration: Option<i64>,
     pub artist_name: Option<String>,
+}
+
+/// Agregado de señales por track para la penalización negativa (FASE 9/11).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TrackSignals {
+    /// Intentos de reproducción (plays + rec_clicks) de este track.
+    pub plays: i64,
+    /// Señales negativas significativas (skips manuales + unlikes).
+    pub negative: i64,
 }

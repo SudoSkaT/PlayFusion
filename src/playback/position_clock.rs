@@ -112,6 +112,20 @@ impl PositionClock {
         self.seek = Some(PendingSeek { target });
     }
 
+    /// Confirma el seek EXTERNAMENTE (el backend reportó éxito).
+    ///
+    /// A diferencia de la confirmación heurística de [`Self::update`], esta
+    /// re-ancla el reloj al objetivo elegido de inmediato porque el backend lo
+    /// confirmó como salto REAL del audio. No depende de que una muestra
+    /// posterior del motor coincida con el objetivo. También se usa para
+    /// confirmar el seek cuando el motor reporta el estado tras el salto.
+    pub fn confirm_seek(&mut self, now: Instant) {
+        if let Some(seek) = self.seek.take() {
+            self.position = seek.target;
+            self.synced_at = Some(now);
+        }
+    }
+
     /// Cancela un seek pendiente (p. ej. llegó otra orden antes de confirmar).
     pub fn cancel_pending_seek(&mut self) {
         self.seek = None;
@@ -318,5 +332,30 @@ mod tests {
         assert_eq!(c.track_key(), None);
         assert_eq!(c.position(), Duration::ZERO);
         assert!(c.pending_seek().is_none());
+    }
+
+    #[test]
+    fn confirm_seek_anchors_to_target_without_waiting_for_a_matching_sample() {
+        let mut c = PositionClock::new();
+        let now = t0();
+        c.update(Some("a"), Duration::from_secs(100), now);
+        // El audio real está en 100s; el usuario pide 20s.
+        c.begin_seek(Duration::from_secs(20));
+        // El backend confirma el salto: re-ancla en 20s aunque el audio real
+        // (que ya se movió) aún no haya mandado una muestra con esa posición.
+        c.confirm_seek(now);
+        assert_eq!(c.position(), Duration::from_secs(20));
+        assert!(c.pending_seek().is_none());
+    }
+
+    #[test]
+    fn cancel_pending_seek_returns_to_real_audio() {
+        let mut c = PositionClock::new();
+        let now = t0();
+        c.update(Some("a"), Duration::from_secs(80), now);
+        c.begin_seek(Duration::from_secs(5));
+        c.cancel_pending_seek();
+        assert!(c.pending_seek().is_none());
+        assert_eq!(c.position(), Duration::from_secs(80), "el audio nunca se movió");
     }
 }

@@ -331,6 +331,13 @@ impl RodioBackend {
                     tokio::time::sleep(MONITOR_INTERVAL).await;
                     continue;
                 }
+                // Durante un seek el estado es transitorio: el monitor no debe
+                // pausar por bajo margen mientras se re-ancla (eso pausaría la
+                // canción en la posición antigua durante el salto).
+                if state == PlaybackState::Seeking {
+                    tokio::time::sleep(MONITOR_INTERVAL).await;
+                    continue;
+                }
                 if state == PlaybackState::Stopped {
                     break;
                 }
@@ -671,24 +678,73 @@ impl PlaybackEngine for RodioBackend {
     async fn seek(&self, pos: Duration) -> Result<PlaybackStatus, PlaybackError> {
         // No mantener el lock mientras `try_seek` espera (puede bloquearse
         // hasta que la región objetivo esté descargada).
-        let paused = {
+        let (paused, had_play, has_buffer) = {
             let inner = self.inner.lock().unwrap();
-            inner.state == PlaybackState::Paused
+            (
+                inner.state == PlaybackState::Paused,
+                matches!(inner.state, PlaybackState::Playing | PlaybackState::Buffering | PlaybackState::Seeking),
+                inner.buffer.is_some(),
+            )
         };
+        if !has_buffer {
+            // Sin stream activo: un seek no tiene adónde ir.
+            let inner = self.inner.lock().unwrap();
+            return Ok(Self::status_locked(&self.player, &inner));
+        }
+        // Estado transitorio "buscando": el audio real NUNCA se mueve todavía.
+        self.bus.emit(PlaybackEvent::SeekStarted);
+        {
+            let mut inner = self.inner.lock().unwrap();
+            inner.state = PlaybackState::Seeking;
+        }
         // Antes de pedirle a rodio el salto hay que asegurar la región
         // objetivo en el buffer: `Player::try_seek` ejecuta el seek en el
         // hilo de audio y el lector bloquea hasta tener los bytes, lo que
         // congela TODA la salida durante el rellenado. Esperar aquí (async)
         // deja la canción sonando desde la posición actual hasta que el salto
         // pueda ejecutarse al instante.
-        if self.prefetch_seek_region(pos).await {
-            let _ = self.player.try_seek(pos);
+        //
+        // Separamos el SEEK REAL del audio (try_seek + confirmación) de la
+        // actualización optimista del reloj: el estado solo avanza si el
+        // backend confirma el salto.
+        let seek_result = if self.prefetch_seek_region(pos).await {
+            self.player.try_seek(pos)
+        } else {
+            Err(rodio::source::SeekError::NotSupported {
+                underlying_source: "stream",
+            })
+        };
+
+        // Restaura el estado de reproducción previo (pausado se queda pausado
+        // en la NUEVA posición; reproduciendo sigue reproduciendo). Esto solo
+        // es válido si el seek real ocurrió; si falló, no hay nada que pausar
+        // en una posición distinta.
+        if seek_result.is_ok() {
             if paused {
                 self.player.pause();
             }
         }
-        let inner = self.inner.lock().unwrap();
-        Ok(Self::status_locked(&self.player, &inner))
+
+        let mut inner = self.inner.lock().unwrap();
+        match seek_result {
+            Ok(()) => {
+                // Confirmado por el backend: el audio real está en `pos`.
+                inner.state = if paused { PlaybackState::Paused } else { PlaybackState::Playing };
+                self.bus.emit(PlaybackEvent::SeekCompleted);
+                Ok(Self::status_locked(&self.player, &inner))
+            }
+            Err(e) => {
+                // El seek falló: el audio NO cambió de posición. Recuperamos
+                // el estado anterior, sin fingir un salto.
+                inner.state = if had_play {
+                    PlaybackState::Playing
+                } else {
+                    PlaybackState::Stopped
+                };
+                self.bus.emit(PlaybackEvent::SeekFailed);
+                Err(PlaybackError::Transport(format!("no se pudo buscar: {e}")))
+            }
+        }
     }
 
     async fn set_volume(&self, volume: u8) -> Result<PlaybackStatus, PlaybackError> {
@@ -705,8 +761,10 @@ impl PlaybackEngine for RodioBackend {
         // `Finished`: evita que el autoplay salte con una canción incompleta.
         // Un corte por límite del CDN (`cut`) tampoco: el monitor notifica el
         // Error cuando el prefijo se agota.
-        if matches!(inner.state, PlaybackState::Playing | PlaybackState::Paused)
-            && self.player.empty()
+        if matches!(
+            inner.state,
+            PlaybackState::Playing | PlaybackState::Paused | PlaybackState::Seeking
+        ) && self.player.empty()
         {
             let natural = inner
                 .buffer

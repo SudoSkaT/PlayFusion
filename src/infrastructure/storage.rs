@@ -6,12 +6,14 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
+use chrono::NaiveDate;
 use sqlx::sqlite::{Sqlite, SqliteQueryResult};
 use sqlx::{Row, Transaction};
 
 use crate::recommendation::types::TrackAcousticProfile;
+use crate::recommendation::signals::{PlayContext, PlaySignal, SignalKind};
 
-use crate::domain::{album::Album, artist::Artist, source::Source, track::Track};
+use crate::domain::{album::Album, artist::Artist, genre::Genre, source::Source, track::Track};
 
 use super::db::Db;
 
@@ -121,9 +123,8 @@ impl Db {
     }
 
     /// Obtiene el perfil acústico de un track específico.
-    pub async fn acoustic_profile_for_track(&self, track_id: i64) -> Result<Option<TrackAcousticProfile>> {
-        let row = sqlx::query(
-            "SELECT rms_mean, bass_mean, low_mid_mean, mid_mean, high_mid_mean, high_mean, \
+    pub async fn acoustic_profile_for_track(&self, track_id: i64) -> Result<Option<TrackAcousticProfile>> {        let row = sqlx::query(
+            "SELECT track_id, rms_mean, bass_mean, low_mid_mean, mid_mean, high_mid_mean, high_mean, \
                     spectral_centroid_mean, bpm_mean, bpm_variance, onset_mean, band_profile, \
                     frame_count \
              FROM track_acoustic_profiles \
@@ -147,26 +148,98 @@ Ok(row.map(|r| TrackAcousticProfile {
             onset_mean: r.get("onset_mean"),
             band_profile: {
                 let s: String = r.get("band_profile");
-                // Parse "[r1,r2,r3,r4,r5]" into [f32; 5]
-                let s = s.trim();
-                if s.starts_with('[') && s.ends_with(']') {
-                    let inner = &s[1..s.len() - 1];
-                    let mut arr = [0.0f32; 5];
-                    let mut i = 0;
-                    for part in inner.split(',') {
-                        if i >= 5 { break; }
-                        if let Ok(val) = part.trim().parse::<f32>() {
-                            arr[i] = val;
-                            i += 1;
-                        }
-                    }
-                    arr
-                } else {
-                    [0.0f32; 5]
-                }
+                band_profile_from_str(&s)
             },
             frame_count: r.get("frame_count"),
         }))
+    }
+
+    /// Guarda (o acumula) el perfil acústico agregado de un track. FASE 8:
+    /// el análisis en vivo produce un `TrackAcousticProfile` promedio al
+    /// terminar una reproducción; aquí se persiste para poder comparar tracks
+    /// sin depender de un análisis en vivo posterior.
+    pub async fn save_acoustic_profile(&self, profile: &TrackAcousticProfile) -> Result<()> {
+        let band = format!(
+            "[{},{},{},{},{}]",
+            profile.band_profile[0],
+            profile.band_profile[1],
+            profile.band_profile[2],
+            profile.band_profile[3],
+            profile.band_profile[4]
+        );
+        sqlx::query(
+            "INSERT INTO track_acoustic_profiles \
+                (track_id, rms_mean, bass_mean, low_mid_mean, mid_mean, high_mid_mean, \
+                 high_mean, spectral_centroid_mean, bpm_mean, bpm_variance, onset_mean, \
+                 band_profile, frame_count) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13) \
+             ON CONFLICT(track_id) DO UPDATE SET \
+                 rms_mean = excluded.rms_mean, \
+                 bass_mean = excluded.bass_mean, \
+                 low_mid_mean = excluded.low_mid_mean, \
+                 mid_mean = excluded.mid_mean, \
+                 high_mid_mean = excluded.high_mid_mean, \
+                 high_mean = excluded.high_mean, \
+                 spectral_centroid_mean = excluded.spectral_centroid_mean, \
+                 bpm_mean = excluded.bpm_mean, \
+                 bpm_variance = excluded.bpm_variance, \
+                 onset_mean = excluded.onset_mean, \
+                 band_profile = excluded.band_profile, \
+                 frame_count = excluded.frame_count",
+        )
+        .bind(profile.track_id)
+        .bind(profile.rms_mean)
+        .bind(profile.bass_mean)
+        .bind(profile.low_mid_mean)
+        .bind(profile.mid_mean)
+        .bind(profile.high_mid_mean)
+        .bind(profile.high_mean)
+        .bind(profile.spectral_centroid_mean)
+        .bind(profile.bpm_mean)
+        .bind(profile.bpm_variance)
+        .bind(profile.onset_mean)
+        .bind(band)
+        .bind(profile.frame_count)
+        .execute(self.pool())
+        .await?;
+        Ok(())
+    }
+
+    /// Todos los perfiles acústicos persistidos, indexados por track_id. Es lo
+    /// que alimenta la comparación acústica del ranking local (FASE 8/9): se
+    /// carga una vez por sesión de recomendación.
+    pub async fn all_acoustic_profiles(&self) -> Result<HashMap<i64, TrackAcousticProfile>> {
+        let rows = sqlx::query(
+            "SELECT track_id, rms_mean, bass_mean, low_mid_mean, mid_mean, high_mid_mean, high_mean, \
+                    spectral_centroid_mean, bpm_mean, bpm_variance, onset_mean, band_profile, \
+                    frame_count \
+             FROM track_acoustic_profiles",
+        )
+        .fetch_all(self.pool())
+        .await?;
+        let mut map = HashMap::with_capacity(rows.len());
+        for row in rows {
+            let p = TrackAcousticProfile {
+                track_id: row.get("track_id"),
+                rms_mean: row.get("rms_mean"),
+                bass_mean: row.get("bass_mean"),
+                low_mid_mean: row.get("low_mid_mean"),
+                mid_mean: row.get("mid_mean"),
+                high_mid_mean: row.get("high_mid_mean"),
+                high_mean: row.get("high_mean"),
+                spectral_centroid_mean: row.get("spectral_centroid_mean"),
+                bpm_mean: row.get("bpm_mean"),
+                bpm_variance: row.get("bpm_variance"),
+                onset_mean: row.get("onset_mean"),
+                band_profile: {
+                    let s: String = row.get("band_profile");
+                    band_profile_from_str(&s)
+                },
+                frame_count: row.get("frame_count"),
+            };
+            map.insert(p.track_id, p);
+        }
+        Ok(map)
     }
 
     /// Frecuencia y última escucha de cada track. La agregación ocurre en
@@ -227,6 +300,82 @@ Ok(row.map(|r| TrackAcousticProfile {
         .await?;
 
         Ok(rows.iter().map(row_to_track).collect())
+    }
+
+    /// Catálogo completo de tracks conocidos, con artistas, álbum y géneros.
+    /// Es la fuente de candidatos del ranking local (FASE 8/9): permite ofrecer
+    /// recomendaciones basadas en el gusto del usuario SIN depender de la red.
+    pub async fn all_tracks(&self) -> Result<Vec<Track>> {
+        let rows = sqlx::query(
+            "SELECT t.id, t.title, t.duration, t.isrc, \
+                    al.title AS album_title, al.id AS album_id, al.release_date, \
+                    p.youtube_id AS youtube_id, \
+                    a.name AS artist_name, a.id AS artist_id \
+             FROM tracks t \
+             LEFT JOIN track_artists ta ON ta.track_id = t.id AND ta.position = 0 \
+             LEFT JOIN artists a ON a.id = ta.artist_id \
+             LEFT JOIN albums al ON al.id = t.album_id \
+             LEFT JOIN providers p ON p.track_id = t.id \
+             ORDER BY t.id",
+        )
+        .fetch_all(self.pool())
+        .await?;
+
+        let genre_rows = sqlx::query(
+            "SELECT track_id, name \
+             FROM tags \
+             ORDER BY track_id, name",
+        )
+        .fetch_all(self.pool())
+        .await?;
+        let mut genres_by_track: HashMap<i64, Vec<String>> = HashMap::new();
+        for r in &genre_rows {
+            let track_id: i64 = r.get("track_id");
+            let name: String = r.get("name");
+            let set = genres_by_track.entry(track_id).or_default();
+            if !set.contains(&name) {
+                set.push(name);
+            }
+        }
+
+        Ok(rows
+            .iter()
+            .map(|r| {
+                let id: i64 = r.get("id");
+                let mut artist = Artist::new(
+                    r.get::<Option<String>, _>("artist_name").unwrap_or_default(),
+                    None,
+                    None,
+                    None,
+                );
+                if artist.name.is_empty() {
+                    artist = Artist::new("Unknown".to_string(), None, None, None);
+                }
+                let mut track = Track::new(r.get("title"), vec![artist], Source::YouTube);
+                track.id = id;
+                track.duration = r
+                    .get::<Option<i64>, _>("duration")
+                    .map(|ms| std::time::Duration::from_millis(ms as u64));
+                track.isrc = r.get("isrc");
+                track.external_id = r.get::<Option<String>, _>("youtube_id");
+                track.album = match r.get::<Option<String>, _>("album_title") {
+                    Some(title) => {
+                        let mut album = Album::new(title, None, None, None);
+                        album.id = r.get::<i64, _>("album_id");
+                        album.release_date = r
+                            .get::<Option<String>, _>("release_date")
+                            .and_then(|d| NaiveDate::parse_from_str(&d, "%Y-%m-%d").ok());
+                        Some(album)
+                    }
+                    None => None,
+                };
+                track.genres = genres_by_track
+                    .get(&id)
+                    .map(|names| names.iter().map(|n| Genre::new(n.clone())).collect())
+                    .unwrap_or_default();
+                track
+            })
+            .collect())
     }
 
     // ------------------------------------------------------------- playlists
@@ -442,7 +591,108 @@ Ok(row.map(|r| TrackAcousticProfile {
             .await?;
         Ok(row.map(|r| r.get("body")))
     }
+
+    // -------------------------------------------------------- play signals
+
+    /// Registra una señal de interacción (play, completed, skip, like, ...).
+    /// Es el modelo de métricas local (FASE 11): cada fila es un evento
+    /// autónomo con su contexto para poder construir el perfil sin mezclar
+    /// señales.
+    pub async fn record_signal(
+        &self,
+        track_id: i64,
+        signal: SignalKind,
+        context: PlayContext,
+        duration_ms: Option<i64>,
+        recomm_id: Option<i64>,
+        track_duration_ms: Option<i64>,
+    ) -> Result<i64> {
+        let result = sqlx::query(
+            "INSERT INTO play_signals \
+                (track_id, signal, context, at, duration_ms, recomm_id, track_duration_ms) \
+             VALUES (?1, ?2, ?3, datetime('now'), ?4, ?5, ?6)",
+        )
+        .bind(track_id)
+        .bind(signal.as_str())
+        .bind(context.as_str())
+        .bind(duration_ms)
+        .bind(recomm_id)
+        .bind(track_duration_ms)
+        .execute(self.pool())
+        .await?;
+        Ok(result.last_insert_rowid())
+    }
+
+    /// Todas las señales de interacción registradas, más recientes primero.
+    pub async fn all_signals(&self, limit: i64) -> Result<Vec<PlaySignal>> {
+        let rows = sqlx::query(
+            "SELECT id, track_id, signal, context, at, duration_ms, recomm_id, track_duration_ms \
+             FROM play_signals ORDER BY at DESC, id DESC LIMIT ?1",
+        )
+        .bind(limit)
+        .fetch_all(self.pool())
+        .await?;
+        Ok(rows.iter().map(signal_to_playsignal).collect())
+    }
+
+    /// Señales de un track concreto (para evaluar su afinidad negativa/skip).
+    pub async fn signals_for_track(&self, track_id: i64) -> Result<Vec<PlaySignal>> {
+        let rows = sqlx::query(
+            "SELECT id, track_id, signal, context, at, duration_ms, recomm_id, track_duration_ms \
+             FROM play_signals WHERE track_id = ?1 ORDER BY at DESC, id DESC",
+        )
+        .bind(track_id)
+        .fetch_all(self.pool())
+        .await?;
+        Ok(rows.iter().map(signal_to_playsignal).collect())
+    }
 }
+
+/// Parsea la representación textual "[r1,r2,r3,r4,r5]" del perfil de bandas a
+/// un array `[f32; 5]`. Devuelve ceros si no se puede interpretar.
+fn band_profile_from_str(s: &str) -> [f32; 5] {
+    let s = s.trim();
+    if !(s.starts_with('[') && s.ends_with(']')) {
+        return [0.0f32; 5];
+    }
+    let inner = &s[1..s.len() - 1];
+    let mut arr = [0.0f32; 5];
+    let mut i = 0;
+    for part in inner.split(',') {
+        if i >= 5 {
+            break;
+        }
+        if let Ok(val) = part.trim().parse::<f32>() {
+            arr[i] = val;
+            i += 1;
+        }
+    }
+    arr
+}
+
+fn signal_to_playsignal(row: &sqlx::sqlite::SqliteRow) -> PlaySignal {
+    let (signal, context) = {
+        let s: String = row.get("signal");
+        let c: Option<String> = row.get("context");
+        (
+            SignalKind::from_str(&s).unwrap_or(SignalKind::Play),
+            c.and_then(|x| PlayContext::from_str(&x))
+                .unwrap_or(PlayContext::Manual),
+        )
+    };
+    PlaySignal {
+        id: row.get("id"),
+        track_id: row.get("track_id"),
+        signal,
+        context,
+        at: row.get("at"),
+        duration_ms: row.get("duration_ms"),
+        recomm_id: row.get("recomm_id"),
+        track_duration_ms: row.get("track_duration_ms"),
+    }
+}
+
+
 
 async fn upsert_track_inner(
     tx: &mut Transaction<'_, Sqlite>,
@@ -908,5 +1158,186 @@ mod tests {
             None,
             "el TTL filtra entradas viejas"
         );
+    }
+
+    #[tokio::test]
+    async fn play_signals_roundtrip_distinguishes_kinds_and_contexts() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::connect(dir.path().join("music.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        let mut track = Track::new(
+            "A".to_string(),
+            vec![Artist::new("X".to_string(), None, None, None)],
+            Source::YouTube,
+        );
+        track.external_id = Some("vid-a".to_string());
+        let id = db.upsert_track(&track, &HashMap::new()).await.unwrap();
+
+        db.record_signal(id, SignalKind::Play, PlayContext::Manual, Some(120_000), None, Some(200_000))
+            .await
+            .unwrap();
+        db.record_signal(id, SignalKind::Completed, PlayContext::Manual, Some(200_000), None, Some(200_000))
+            .await
+            .unwrap();
+        db.record_signal(id, SignalKind::Skip, PlayContext::Autoplay, Some(5_000), None, Some(200_000))
+            .await
+            .unwrap();
+        db.record_signal(id, SignalKind::Like, PlayContext::Manual, None, Some(42), Some(200_000))
+            .await
+            .unwrap();
+
+        let all = db.all_signals(100).await.unwrap();
+        assert_eq!(all.len(), 4, "cuatro señales distintas persistidas");
+        let kinds: Vec<SignalKind> = all.iter().map(|s| s.signal).collect();
+        assert!(kinds.contains(&SignalKind::Play));
+        assert!(kinds.contains(&SignalKind::Completed));
+        assert!(kinds.contains(&SignalKind::Skip));
+        assert!(kinds.contains(&SignalKind::Like));
+
+        let by_track = db.signals_for_track(id).await.unwrap();
+        assert_eq!(by_track.len(), 4);
+        assert!(
+            by_track.iter().any(|s| s.signal == SignalKind::Like && s.recomm_id == Some(42)),
+            "la señal Like conserva su recomm_id"
+        );
+    }
+
+    #[tokio::test]
+    async fn acoustic_profile_roundtrip_persists_means_and_band_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::connect(dir.path().join("music.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        let mut track = Track::new(
+            "A".to_string(),
+            vec![Artist::new("X".to_string(), None, None, None)],
+            Source::YouTube,
+        );
+        track.external_id = Some("vid-a".to_string());
+        let id = db.upsert_track(&track, &HashMap::new()).await.unwrap();
+
+        let p = TrackAcousticProfile {
+            track_id: id,
+            rms_mean: 0.3,
+            bass_mean: 0.8,
+            low_mid_mean: 0.4,
+            mid_mean: 0.5,
+            high_mid_mean: 0.3,
+            high_mean: 0.2,
+            spectral_centroid_mean: 0.4,
+            bpm_mean: 96.0,
+            bpm_variance: 4.0,
+            onset_mean: 0.1,
+            band_profile: [0.8, 0.4, 0.5, 0.3, 0.2],
+            frame_count: 150,
+        };
+        db.save_acoustic_profile(&p).await.unwrap();
+
+        let got = db.acoustic_profile_for_track(id).await.unwrap().unwrap();
+        assert_eq!(got.track_id, id);
+        assert!((got.bass_mean - 0.8).abs() < 1e-4);
+        assert!((got.bpm_mean - 96.0).abs() < 1e-3);
+        assert_eq!(got.band_profile, [0.8, 0.4, 0.5, 0.3, 0.2]);
+        assert_eq!(got.frame_count, 150);
+
+        // Re-guardar con valores nuevos reemplaza el perfil (acumulación nueva).
+        let p2 = TrackAcousticProfile {
+            track_id: id,
+            rms_mean: 0.1,
+            ..p
+        };
+        db.save_acoustic_profile(&p2).await.unwrap();
+        let got2 = db.acoustic_profile_for_track(id).await.unwrap().unwrap();
+        assert!((got2.rms_mean - 0.1).abs() < 1e-4);
+    }
+
+    #[tokio::test]
+    async fn all_tracks_catalog_includes_artists_genres_and_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::connect(dir.path().join("music.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        let mut track = Track::new(
+            "Catalogo".to_string(),
+            vec![Artist::new("El Artista".to_string(), None, None, None)],
+            Source::YouTube,
+        );
+        track.duration = Some(std::time::Duration::from_secs(180));
+        track.genres = vec![Genre::new("jazz".to_string()), Genre::new("ambient".to_string())];
+        track.external_id = Some("vid-cat".to_string());
+        let mut ids = HashMap::new();
+        ids.insert(Source::YouTube, "vid-cat".to_string());
+        let id = db.upsert_track(&track, &ids).await.unwrap();
+        assert!(id > 0);
+
+        let catalog = db.all_tracks().await.unwrap();
+        assert_eq!(catalog.len(), 1, "el catálogo incluye el track guardado");
+        let t = &catalog[0];
+        assert_eq!(t.id, id);
+        assert_eq!(t.title, "Catalogo");
+        assert_eq!(t.primary_artist_name(), Some("El Artista"));
+        assert_eq!(t.external_id.as_deref(), Some("vid-cat"));
+        let mut genre_names: Vec<&str> = t.genres.iter().map(|g| g.name.as_str()).collect();
+        genre_names.sort_unstable();
+        assert_eq!(genre_names, vec!["ambient", "jazz"]);
+    }
+
+    #[tokio::test]
+    async fn all_acoustic_profiles_loads_all_profiles_by_track_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::connect(dir.path().join("music.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        let mut t1 = Track::new(
+            "S1".to_string(),
+            vec![Artist::new("A".to_string(), None, None, None)],
+            Source::YouTube,
+        );
+        t1.external_id = Some("v1".to_string());
+        let mut ids1 = HashMap::new();
+        ids1.insert(Source::YouTube, "v1".to_string());
+        let id1 = db.upsert_track(&t1, &ids1).await.unwrap();
+
+        let mut t2 = Track::new(
+            "S2".to_string(),
+            vec![Artist::new("A".to_string(), None, None, None)],
+            Source::YouTube,
+        );
+        t2.external_id = Some("v2".to_string());
+        let mut ids2 = HashMap::new();
+        ids2.insert(Source::YouTube, "v2".to_string());
+        let id2 = db.upsert_track(&t2, &ids2).await.unwrap();
+
+        for id in [id1, id2] {
+            db.save_acoustic_profile(&TrackAcousticProfile {
+                track_id: id,
+                rms_mean: 0.2,
+                bass_mean: 0.6,
+                low_mid_mean: 0.3,
+                mid_mean: 0.4,
+                high_mid_mean: 0.2,
+                high_mean: 0.1,
+                spectral_centroid_mean: 0.35,
+                bpm_mean: 100.0,
+                bpm_variance: 2.0,
+                onset_mean: 0.05,
+                band_profile: [0.6, 0.3, 0.4, 0.2, 0.1],
+                frame_count: 60,
+            })
+            .await
+            .unwrap();
+        }
+
+        let all = db.all_acoustic_profiles().await.unwrap();
+        assert_eq!(all.len(), 2);
+        assert!(all.contains_key(&id1));
+        assert!(all.contains_key(&id2));
+        assert!((all[&id1].bpm_mean - 100.0).abs() < 1e-3);
+        assert_eq!(all[&id2].band_profile, [0.6, 0.3, 0.4, 0.2, 0.1]);
     }
 }

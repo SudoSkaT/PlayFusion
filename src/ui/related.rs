@@ -21,6 +21,7 @@ use crate::domain::track::Track;
 use crate::infrastructure::storage::TrackListeningStats;
 
 use super::widgets::karaoke::KaraokeScroller;
+use crate::visualization::render as visualizer;
 
 #[derive(Debug, Default)]
 pub struct RelatedState {
@@ -108,24 +109,46 @@ pub fn render(
     position: Option<Duration>,
     finished: bool,
     palette: Option<[[u8; 3]; 3]>,
+    visual: &crate::visualization::VisualState,
     mouse: &Option<(u16, u16)>,
     click: &mut bool,
     stats: &std::collections::HashMap<String, TrackListeningStats>,
 ) {
+    let has_lyrics = state.synced.as_ref().filter(|s| !s.is_empty()).is_some();
+    // El visual necesita al menos un poco de altura; si el terminal es bajo se
+    // prescinde de la banda superior y todo el espacio va a la lista.
+    let can_visual = area.height >= 24;
+    // La banda superior se reserva si hay letras (karaoke), el visual puede
+    // ocupar su lugar, o hay que avisar de que las letras no están disponibles.
+    let reserve_band = has_lyrics || can_visual || state.synced_unavailable;
+
     let mut chunks = vec![];
-    if state.synced.is_some() || state.synced_unavailable {
-        let lyrics_height = area.height.saturating_sub(7).clamp(6, 18);
+    if reserve_band {
+        let band_height = area.height.saturating_sub(7).clamp(6, 18);
         chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(lyrics_height), Constraint::Min(0)])
+            .constraints([Constraint::Length(band_height), Constraint::Min(0)])
             .split(area)
             .to_vec();
     } else {
         chunks = vec![area];
     }
 
-    if let Some(lyr_area) = chunks.first().copied() {
-        render_lyrics(frame, lyr_area, state, position, finished, palette);
+    if reserve_band {
+        let top_area = chunks[0];
+        if can_visual && !has_lyrics {
+            // Sin letras en un terminal alto: el visual de la canción ocupa el
+            // espacio de la banda (y sus barras usan la paleta de la portada).
+            visualizer::render(
+                frame,
+                top_area,
+                visual,
+                position.unwrap_or(Duration::ZERO).as_secs_f32(),
+                palette,
+            );
+        } else {
+            render_lyrics(frame, top_area, state, position, finished, palette);
+        }
     }
 
     let tracks_area = chunks.last().copied().unwrap_or(area);
@@ -335,6 +358,7 @@ mod tests {
                     Some(position),
                     finished,
                     palette,
+                    &crate::visualization::VisualState::inactive(),
                     &None,
                     &mut false,
                     &std::collections::HashMap::new(),
@@ -454,6 +478,7 @@ mod tests {
                     Some(Duration::from_secs(5)),
                     false,
                     None,
+                    &crate::visualization::VisualState::inactive(),
                     &None,
                     &mut false,
                     &std::collections::HashMap::new(),

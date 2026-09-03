@@ -16,6 +16,9 @@ pub mod preload;
 pub mod queue;
 pub mod recovery;
 
+#[cfg(test)]
+pub mod karaoke_tests;
+
 pub use position_clock::{ClockEvent, PositionClock};
 pub use preload::{PreloadConfig, PreloadManager, should_preload};
 pub use queue::{QueueManager, RepeatMode};
