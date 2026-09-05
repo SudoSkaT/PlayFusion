@@ -31,6 +31,41 @@ use self::app::App;
 use self::backend::{spawn_backend, Backend};
 use self::event::UiEvent;
 
+/// Contenido de la banda superior de la vista Related (spec §16/§17).
+///
+/// Un subestado de la capa de presentación que conmuta con `v` sin regenerar
+/// recomendaciones, sin tocar la reproducción y sin destruir el estado del
+/// otro modo (las letras y el visual coexisten en la misma capa ambiental).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VisualContent {
+    /// Letras si las hay; si no, el visual (recomendado por defecto).
+    #[default]
+    Auto,
+    /// Siempre letras (karaoke ambiental).
+    Lyrics,
+    /// Siempre el visualizador.
+    Visual,
+}
+
+impl VisualContent {
+    /// Siguiente modo en el ciclo `Auto → Lyrics → Visual → Auto`.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Auto => Self::Lyrics,
+            Self::Lyrics => Self::Visual,
+            Self::Visual => Self::Auto,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "automático",
+            Self::Lyrics => "letras",
+            Self::Visual => "visual",
+        }
+    }
+}
+
 /// Inicializa la terminal y ejecuta el loop principal de la TUI.
 pub async fn run() -> Result<()> {
     let mut terminal = ratatui::init();

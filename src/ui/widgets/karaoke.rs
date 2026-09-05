@@ -15,9 +15,9 @@
 
 use std::collections::VecDeque;
 
-use ratatui::layout::{Alignment, Rect};
+use ratatui::layout::{Alignment, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
 
@@ -199,6 +199,77 @@ pub fn render_karaoke(
     frame.render_widget(text, area);
 }
 
+/// Marco decorativo con título (evita repetir la definición de borde).
+pub fn paint_frame(frame: &mut Frame, area: Rect, title: &str, title_color: Color) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::new().fg(title_color))
+        .title(Span::styled(
+            title,
+            Style::new().fg(title_color).add_modifier(Modifier::BOLD),
+        ));
+    frame.render_widget(block, area);
+}
+
+/// Overlay de karaoke que NO destruye el fondo: pinta solo el marco y el texto
+/// de las líneas (fondo transparente), para que la capa ambiental (lava) siga
+/// viva detrás de las letras (spec §7/§15).
+///
+/// La línea activa queda en una fila estable alrededor de dos tercios del
+/// panel; usa el mismo deslizamiento en cascada de [`KaraokeScroller`].
+#[allow(clippy::too_many_arguments)] // filas, línea y colores son datos del render
+pub fn render_over_scene(
+    frame: &mut Frame,
+    area: Rect,
+    scroller: &mut KaraokeScroller,
+    lyrics: &SyncLyrics,
+    active: Option<usize>,
+    finished: bool,
+    colors: (Color, Color, Color),
+) {
+    let inner_h = area.height.saturating_sub(2) as usize;
+    scroller.advance(lyrics, active, finished, inner_h);
+
+    let (read_c, cur_c, unread_c) = colors;
+    paint_frame(frame, area, " Letras · karaoke (LRCLIB) ", cur_c);
+
+    let inner = area.inner(Margin {
+        horizontal: 1,
+        vertical: 1,
+    });
+    let inner_w = inner.width as usize;
+    if inner_w == 0 || inner.height == 0 {
+        return;
+    }
+
+    for (pos, &i) in scroller
+        .window
+        .iter()
+        .take(inner.height as usize)
+        .enumerate()
+    {
+        let Some(line) = lyrics.lines.get(i) else {
+            break;
+        };
+        let style = if Some(i) == active {
+            Style::new().fg(cur_c).add_modifier(Modifier::BOLD)
+        } else if active.is_some_and(|a| i < a) {
+            Style::new().fg(read_c)
+        } else {
+            Style::new().fg(unread_c)
+        };
+        // Escritura directa al buffer: el fondo de la celda NO se toca, así la
+        // lava ambiental permanece detrás del texto.
+        let text = &line.text;
+        let width = text.chars().count();
+        let pad = inner_w.saturating_sub(width) / 2;
+        let y = inner.y + pos as u16;
+        frame
+            .buffer_mut()
+            .set_stringn(inner.x + pad as u16, y, text, inner_w, style);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -346,5 +417,58 @@ mod tests {
         s.advance(&lyrics(5), None, false, 0);
         s.advance(&lyrics(5), Some(2), true, 0);
         assert!(s.window.is_empty());
+    }
+
+    #[test]
+    fn overlay_preserves_background_below_text() {
+        // El karaoke superpuesto NO debe borrar el fondo (a diferencia del
+        // Paragraph antiguo): la lava ambiental queda viva detrás del texto.
+        use ratatui::backend::TestBackend;
+        use ratatui::layout::Margin;
+        use ratatui::Terminal;
+
+        let sync = SyncLyrics::parse("[00:05] una linea de prueba\n[00:10] dos\n");
+        let backend = TestBackend::new(50, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area().inner(Margin {
+                    horizontal: 1,
+                    vertical: 1,
+                });
+                // Un fondo "ambiental" artificial en toda la zona interior.
+                f.buffer_mut()
+                    .set_style(area, Style::new().bg(Color::Magenta));
+                let mut scroller = KaraokeScroller::default();
+                render_over_scene(
+                    f,
+                    area,
+                    &mut scroller,
+                    &sync,
+                    Some(0),
+                    false,
+                    (Color::DarkGray, Color::White, Color::Yellow),
+                );
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+
+        // El texto se escribió sobre el fondo… pero las celdas de suelo (marco
+        // o zona sin glifos) conservan su Magenta.
+        let text_root = buf
+            .content()
+            .iter()
+            .find(|c| c.symbol() == "u")
+            .map(|c| c.bg);
+        assert!(
+            matches!(text_root, Some(Color::Magenta)),
+            "la celda del glifo conserva el fondo ambiental"
+        );
+        assert!(
+            buf.content()
+                .iter()
+                .any(|c| c.symbol() == " " && c.bg == Color::Magenta),
+            "las celdas vacías del interior siguen con el fondo (no borrado)"
+        );
     }
 }

@@ -2,10 +2,11 @@
 //!
 //! ```text
 //! AudioFeatures ──▶ ParameterMapper ──▶ VisualParameters ──▶ VisualEngine
-//! PlaybackPosition ────────────────────────────────────────┘        │
-//!                                                            VisualState
-//!                                                                   ▼
-//!                                                             Renderer (TUI)
+//! PlaybackPosition ────────┐                    VisualPalette ─┘        │
+//!                          ▼                       (de la portada)      ▼
+//!                                              VisualState (barras+escena)
+//!                                                                       ▼
+//!                                                       Renderer compuesto (TUI)
 //! ```
 //!
 //! Reglas duras:
@@ -18,10 +19,12 @@
 //!   sensibilidad, gate), nunca hardcodeado en el renderer (spec §23/§24).
 
 pub mod engine;
+pub mod palette;
 pub mod params;
 pub mod render;
 
 pub use engine::{VisualEngine, VisualState};
+pub use palette::VisualPalette;
 pub use params::{MapperConfig, ParameterMapper};
 
 /// Nº de barras del espectro TUI v0.

@@ -54,8 +54,13 @@ de la solución: la causa nunca fue la IP.
 Al reproducir una canción aparece una banda **Visual** entre la tarjeta del
 disco y la barra de progreso: espectro de barras reactivo (graves a la
 izquierda), punto de pulso ● en el título que late con el beat y color según
-la intensidad de agudos. La fase deriva SIEMPRE de la posición real de
-reproducción (sin relojes visuales propios).
+la intensidad de agudos. Debajo, una capa ambiental de **lava** (metaballs)
+reacciona a energía/brillo/distorsión del PCM, y su **paleta se deriva de la
+portada** de la canción. La fase deriva SIEMPRE de la posición real de
+reproducción (sin relojes visuales propios), y la transición al hacer seek se
+suaviza en vez de tele-transportar. En la vista *Related*, la tecla **`v`**
+cicla entre Auto / Letras / Visual, y las letras karaoke se superponen sobre la
+lava aplacada sin borrarle el fondo.
 
 Requiere salida de audio real funcionando (rodio/cpal). Se controla desde
 `.env` sin recompilar:

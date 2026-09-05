@@ -57,6 +57,12 @@ pub struct VisualParameters {
     pub pulse_kick: f32,
     /// Ciclos por segundo para la fase determinista.
     pub phase_rate: f32,
+    /// Energía continua 0..1 (RMS): infla la escena sin depender del beat.
+    pub energy: f32,
+    /// Brillo 0..1 (agudos + flujo): intensidad de color/resplandor.
+    pub brightness: f32,
+    /// Deformación espacial 0..1 (medios + flujo): wobble de los glóbulos.
+    pub distortion: f32,
 }
 
 fn shaped(v: f32, cfg: &MapperConfig) -> f32 {
@@ -164,6 +170,15 @@ impl ParameterMapper {
             self.cfg.fallback_phase_rate
         };
 
+        // Compañeros de escena: continúan cuando el beat está ausente (alcance
+        // de "energía visual continua", spec §6).
+        let energy = shaped(f.rms, &self.cfg);
+        let brightness = shaped(
+            f.high * 0.8 + f.high_mid * 0.4 + f.spectral_flux * 0.3,
+            &self.cfg,
+        );
+        let distortion = (f.mid * 0.6 + f.spectral_flux * self.cfg.turbulence_gain).clamp(0.0, 1.0);
+
         VisualParameters {
             bars,
             level,
@@ -171,6 +186,9 @@ impl ParameterMapper {
             turbulence,
             pulse_kick,
             phase_rate,
+            energy,
+            brightness,
+            distortion,
         }
     }
 }
@@ -222,6 +240,9 @@ mod tests {
         for v in [p.level, p.intensity, p.turbulence, p.pulse_kick] {
             assert!((0.0..=1.0).contains(&v), "{v} fuera de rango");
         }
+        for v in [p.energy, p.brightness, p.distortion] {
+            assert!((0.0..=1.0).contains(&v), "{v} fuera de rango");
+        }
     }
 
     #[test]
@@ -263,5 +284,63 @@ mod tests {
         let calm = mapper.map(&features([0.5; 5], 0.1, 0.0, false, 0.0));
         assert!(hit.pulse_kick > 0.5);
         assert_eq!(calm.pulse_kick, 0.0);
+    }
+
+    fn rms_of(bands: [f32; 5]) -> f32 {
+        bands.iter().sum::<f32>() / 5.0
+    }
+
+    #[test]
+    fn loud_rms_raises_energy_monotonically_beyond_floor() {
+        let mapper = ParameterMapper::default();
+        let soft = mapper.map(&features([0.1; 5], 0.0, 0.0, false, 0.0));
+        let loud = mapper.map(&features([0.9; 5], 0.0, 0.0, false, 0.0));
+        assert!(
+            loud.energy > soft.energy,
+            "más RMS ⇒ más energía de escena (continuo, no binario)"
+        );
+        assert_eq!(
+            mapper
+                .map(&features([0.005; 5], 0.0, 0.0, false, 0.0))
+                .energy,
+            0.0
+        );
+    }
+
+    #[test]
+    fn treble_raises_brightness_above_bass_heavy_song() {
+        let mapper = ParameterMapper::default();
+        let treble = mapper.map(&features([0.1, 0.1, 0.1, 0.3, 0.9], 0.2, 0.0, false, 0.0));
+        let bassy = mapper.map(&features([0.9, 0.5, 0.2, 0.05, 0.02], 0.0, 0.0, false, 0.0));
+        assert!(treble.brightness > bassy.brightness, "agudos iluminan");
+    }
+
+    #[test]
+    fn mids_and_flux_raise_distortion() {
+        let mapper = ParameterMapper::default();
+        let busier = mapper.map(&features([0.3, 0.3, 0.8, 0.3, 0.3], 0.5, 0.0, false, 0.0));
+        let calm = mapper.map(&features([0.3, 0.3, 0.1, 0.3, 0.3], 0.05, 0.0, false, 0.0));
+        assert!(busier.distortion > calm.distortion, "medios+flujo deforman");
+    }
+
+    #[test]
+    fn energy_brightness_do_not_touch_on_silence() {
+        let mapper = ParameterMapper::default();
+        let p = mapper.map(&features(
+            [0.005, 0.005, 0.0, 0.005, 0.005],
+            0.0,
+            0.0,
+            false,
+            0.0,
+        ));
+        assert_eq!(p.energy, 0.0);
+        assert_eq!(p.brightness, 0.0);
+        assert_eq!(p.distortion, 0.0);
+    }
+
+    #[test]
+    fn test_rms_helper_is_sane() {
+        assert!((rms_of([0.0; 5]) - 0.0).abs() < 1e-6);
+        assert!((rms_of([1.0; 5]) - 1.0).abs() < 1e-6);
     }
 }

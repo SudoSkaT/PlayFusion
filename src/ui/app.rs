@@ -19,7 +19,7 @@ use crate::infrastructure::storage::TrackListeningStats;
 use crate::infrastructure::storage::{HistoryEntry, PlaylistRow};
 use crate::playback::clamp_seek_target;
 use crate::recommendation::RecommendationSession;
-use crate::visualization::{ParameterMapper, VisualEngine};
+use crate::visualization::{ParameterMapper, VisualEngine, VisualPalette};
 
 use super::backend::BackendCommand;
 use super::event::{BackendEvent, UiEvent};
@@ -27,6 +27,7 @@ use super::navigation::ListSelection;
 use super::search::SearchState;
 use super::settings::SettingsForm;
 use super::view::View;
+use super::VisualContent;
 use super::{dashboard, history, metadata, related, search, settings, sources};
 
 /// Un aviso de diagnóstico transitorio para el pie de página.
@@ -120,6 +121,8 @@ pub struct App {
     thumbnails: std::collections::HashMap<String, ThumbnailState>,
     /// Motor visual (mapper + inercia) alimentado por features+posición.
     visual: VisualEngine,
+    /// Contenido elegido para la banda superior de Related (spec §16/§17).
+    visual_mode: VisualContent,
     /// Último snapshot de features recibido del backend.
     features: Option<Arc<AudioFeatures>>,
     /// Instante de recepción del último snapshot (frescura ~900 ms).
@@ -163,6 +166,7 @@ impl App {
             pending_track: None,
             thumbnails: std::collections::HashMap::new(),
             visual: VisualEngine::new(ParameterMapper::default()),
+            visual_mode: VisualContent::default(),
             features: None,
             features_at: None,
             frame: 0,
@@ -307,6 +311,17 @@ impl App {
                 } else {
                     "Autoplay desactivado.".to_string()
                 });
+            }
+            // Contenido de la banda superior (spec §16): Auto → letras si las
+            // hay, si no el visualizador; Letras y Visual fuerzan su modo. El
+            // cambio es puro de presentación: no regenera recomendaciones, no
+            // toca la reproducción y no destruye el estado del otro modo.
+            KeyCode::Char('v') => {
+                self.visual_mode = self.visual_mode.next();
+                self.status = Some(format!(
+                    "Contenido de la banda: {} (Auto: letras si las hay, si no el visual)",
+                    self.visual_mode.label()
+                ));
             }
             // Salto entre recomendaciones: Shift+D avanza a la siguiente de la
             // cola y Shift+A vuelve a la anterior. Llegan como mayúscula (con o
@@ -857,7 +872,10 @@ impl App {
                     .filter(|t| t.elapsed() < std::time::Duration::from_millis(900))
                     .and_then(|_| self.features.clone());
                 let position = self.karaoke_now();
-                let state = self.visual.update(fresh.as_ref(), position);
+                // La paleta de la portada entra al MOTOR: el engine la funde con
+                // la anterior y la escena la expone ya mezclada al renderer.
+                let palette = VisualPalette::from_cover(self.cover_palette());
+                let state = self.visual.update(fresh.as_ref(), position, &palette);
                 dashboard::render(
                     frame,
                     area,
@@ -873,16 +891,16 @@ impl App {
                 );
             }
             View::Related => {
-                let palette = self.cover_palette();
                 let position = self.karaoke_now();
                 // Mismo cálculo de frescura que Now Playing: si el visual va a
-                // ocupar el espacio de las letras (cuando no las hay), sus
-                // barras reflejan el análisis actual (o quedan inactivas).
+                // ocupar el espacio de las letras (cuando no las hay), su
+                // escena refleja el análisis actual (o queda dormida).
                 let fresh = self
                     .features_at
                     .filter(|t| t.elapsed() < std::time::Duration::from_millis(900))
                     .and_then(|_| self.features.clone());
-                let visual = self.visual.update(fresh.as_ref(), position);
+                let palette = VisualPalette::from_cover(self.cover_palette());
+                let visual = self.visual.update(fresh.as_ref(), position, &palette);
                 related::render(
                     frame,
                     area,
@@ -892,7 +910,7 @@ impl App {
                     // el motor está `Stopped` (canción acabada o detenida), no
                     // al superar la última línea del LRC.
                     self.playback.state == PlaybackState::Stopped,
-                    palette,
+                    self.visual_mode,
                     &visual,
                     &self.mouse_pos,
                     &mut self.mouse_click,

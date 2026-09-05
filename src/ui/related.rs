@@ -10,7 +10,7 @@
 
 use std::time::Duration;
 
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
@@ -21,6 +21,8 @@ use crate::domain::track::Track;
 use crate::infrastructure::storage::TrackListeningStats;
 
 use super::widgets::karaoke::KaraokeScroller;
+use super::VisualContent;
+use crate::visualization::palette::VisualPalette;
 use crate::visualization::render as visualizer;
 
 use super::navigation::ListSelection;
@@ -96,21 +98,58 @@ impl super::navigation::ListSelection for RelatedState {
     }
 }
 
-/// Renderiza la vista Related: letras (arriba) + lista de recomendados (abajo).
+/// Contenido efectivo de la banda superior, resuelto desde [`VisualContent`].
+enum BandContent {
+    /// El visualizador (lava + barras) ocupa la banda.
+    Visual,
+    /// Letras karaoke sobre la capa ambiental.
+    Lyrics,
+    /// Las letras no existen (LRCLIB no las tiene): aviso sobre el ambient.
+    Unavailable,
+    /// Las letras aún no se pidieron: aviso neutro sobre el ambient.
+    Waiting,
+}
+
+impl BandContent {
+    fn resolve(mode: VisualContent, has_lyrics: bool, unavailable: bool) -> Self {
+        match mode {
+            VisualContent::Visual => Self::Visual,
+            VisualContent::Lyrics => {
+                if has_lyrics {
+                    Self::Lyrics
+                } else if unavailable {
+                    Self::Unavailable
+                } else {
+                    Self::Waiting
+                }
+            }
+            VisualContent::Auto => {
+                if has_lyrics {
+                    Self::Lyrics
+                } else {
+                    Self::Visual
+                }
+            }
+        }
+    }
+}
+
+/// Renderiza la vista Related: banda superior (letras/visual, capa ambiental
+/// compartida) + lista de recomendados.
 ///
 /// `position` es el reloj del karaoke y `finished` si la reproducción ya
 /// terminó de verdad (estado `Stopped`): al terminar se limpia el panel de
-/// letras. `palette` son los tres colores dominantes de la portada, usados
-/// para colorear los tres estados de las letras. `palette` es `None` si la
-/// miniatura aún no está lista.
-#[allow(clippy::too_many_arguments)] // posición, fin y paleta son datos del render
+/// letras. `mode` es el contenido elegido por el usuario (`v`): Auto/Letras/
+/// Visual; cambiar de modo nunca regenera recomendaciones ni toca la
+/// reproducción (§17).
+#[allow(clippy::too_many_arguments)] // posición, fin, modo y paleta son datos del render
 pub fn render(
     frame: &mut Frame,
     area: Rect,
     state: &mut RelatedState,
     position: Option<Duration>,
     finished: bool,
-    palette: Option<[[u8; 3]; 3]>,
+    mode: VisualContent,
     visual: &crate::visualization::VisualState,
     mouse: &Option<(u16, u16)>,
     click: &mut bool,
@@ -138,18 +177,44 @@ pub fn render(
 
     if reserve_band {
         let top_area = chunks[0];
-        if can_visual && !has_lyrics {
-            // Sin letras en un terminal alto: el visual de la canción ocupa el
-            // espacio de la banda (y sus barras usan la paleta de la portada).
-            visualizer::render(
-                frame,
-                top_area,
-                visual,
-                position.unwrap_or(Duration::ZERO).as_secs_f32(),
-                palette,
-            );
-        } else {
-            render_lyrics(frame, top_area, state, position, finished, palette);
+        match BandContent::resolve(mode, has_lyrics, state.synced_unavailable) {
+            BandContent::Visual => {
+                visualizer::render(
+                    frame,
+                    top_area,
+                    visual,
+                    position.unwrap_or(Duration::ZERO).as_secs_f32(),
+                );
+            }
+            BandContent::Lyrics => {
+                visualizer::render_ambient(frame, top_area, visual, true);
+                render_karaoke_over_scene(
+                    frame,
+                    top_area,
+                    state,
+                    position,
+                    finished,
+                    &visual.scene.palette,
+                );
+            }
+            BandContent::Unavailable => {
+                visualizer::render_ambient(frame, top_area, visual, true);
+                render_message_over_scene(
+                    frame,
+                    top_area,
+                    " Letras ",
+                    "Letras sincronizadas no disponibles",
+                );
+            }
+            BandContent::Waiting => {
+                visualizer::render_ambient(frame, top_area, visual, true);
+                render_message_over_scene(
+                    frame,
+                    top_area,
+                    " Letras ",
+                    "Sin letras sincronizadas todavía. Reproduce y vuelve aquí.",
+                );
+            }
         }
     }
 
@@ -166,67 +231,32 @@ pub fn render(
     );
 }
 
-/// Renderiza las letras: modo karaoke si hay LRC (línea activa resaltada y
-/// desplazamiento en cascada sobre el buffer circular); si no hay letra
-/// sincronizada se muestra un estado limpio — nunca la letra plana antigua.
-#[allow(clippy::too_many_arguments)] // posición, fin y paleta son datos del render
-fn render_lyrics(
-    frame: &mut Frame,
-    area: Rect,
-    state: &mut RelatedState,
-    position: Option<Duration>,
-    finished: bool,
-    palette: Option<[[u8; 3]; 3]>,
-) {
-    if state.synced.as_ref().filter(|s| !s.is_empty()).is_some() {
-        render_karaoke(frame, area, state, position, finished, palette);
-        return;
-    }
-    if state.synced_unavailable {
-        let block = Block::default().borders(Borders::ALL).title(" Letras ");
-        let text = Paragraph::new(Line::from(Span::styled(
-            "Letras sincronizadas no disponibles",
-            Style::new().fg(Color::DarkGray),
-        )))
-        .block(block)
-        .alignment(Alignment::Center);
-        frame.render_widget(text, area);
-    }
-}
-
 /// Prepara el estado del karaoke (línea activa, fin de letra, paleta) y delega
-/// el render en la ventana deslizante ([`KaraokeScroller`]).
+/// el render en el overlay que preserva la capa ambiental.
 ///
 /// Los tres estados (ya leído / en lectura / no leído) adoptan los tres colores
-/// dominantes de la portada. El panel se limpia cuando la reproducción terminó
-/// de verdad (`finished` = estado `Stopped` del motor): al acabar la canción se
-/// vuelve al estado inicial, sin esperar a que el LRC se quede sin versos. Hasta
-/// entonces, aunque la última línea ya se haya cantado (outro largo), la línea
-/// final permanece visible y el karaoke no "se queda atascado" ni se limpia
-/// antes de tiempo.
-#[allow(clippy::too_many_arguments)] // posición, fin y paleta son datos del render
-fn render_karaoke(
+/// de la paleta fundida de la portada (que el motor visual entrega en
+/// `visual.scene.palette`). El panel se limpia cuando la reproducción terminó
+/// de verdad (`finished` = estado `Stopped` del motor).
+fn render_karaoke_over_scene(
     frame: &mut Frame,
     area: Rect,
     state: &mut RelatedState,
     position: Option<Duration>,
     finished: bool,
-    palette: Option<[[u8; 3]; 3]>,
+    palette: &VisualPalette,
 ) {
     let Some(sync) = state.synced.as_ref().filter(|s| !s.is_empty()) else {
         return;
     };
     let pos = position.unwrap_or(Duration::ZERO);
-
-    // Fin real de la reproducción: sin línea activa, se limpia todo.
     let active = if finished {
         None
     } else {
         sync.active_index(pos)
     };
-
-    let colors = palette_colors(palette);
-    super::widgets::karaoke::render_karaoke(
+    let colors = karaoke_colors(palette);
+    super::widgets::karaoke::render_over_scene(
         frame,
         area,
         &mut state.scroll,
@@ -237,18 +267,32 @@ fn render_karaoke(
     );
 }
 
-/// Mapea los tres estados del karaoke a los tres colores dominantes de la
-/// portada: `(ya leído, en lectura, no leído)`. La línea activa usa el color
-/// más dominante; sin paleta cae al esquema fijo.
-fn palette_colors(palette: Option<[[u8; 3]; 3]>) -> (Color, Color, Color) {
-    match palette {
-        Some(p) => (
-            Color::Rgb(p[1][0], p[1][1], p[1][2]),
-            Color::Rgb(p[0][0], p[0][1], p[0][2]),
-            Color::Rgb(p[2][0], p[2][1], p[2][2]),
-        ),
-        None => (Color::DarkGray, Color::White, Color::Yellow),
+/// Mapea los tres estados del karaoke a los tres colores de la paleta fundida:
+/// `(ya leído, en lectura, no leído)`. La línea activa usa el dominante.
+fn karaoke_colors(p: &VisualPalette) -> (Color, Color, Color) {
+    (
+        Color::Rgb(p.secondary[0], p.secondary[1], p.secondary[2]),
+        Color::Rgb(p.primary[0], p.primary[1], p.primary[2]),
+        Color::Rgb(p.accent[0], p.accent[1], p.accent[2]),
+    )
+}
+
+/// Panel de aviso CON fondo transparente (escritura directa): no borra la capa
+/// ambiental que hay detrás.
+fn render_message_over_scene(frame: &mut Frame, area: Rect, title: &str, text: &str) {
+    super::widgets::karaoke::paint_frame(frame, area, title, Color::DarkGray);
+    let inner = area.inner(Margin {
+        horizontal: 1,
+        vertical: 1,
+    });
+    if inner.width < 4 || inner.height == 0 {
+        return;
     }
+    let y = inner.y + inner.height.saturating_sub(1) / 2;
+    let pad = inner.width.saturating_sub(text.chars().count() as u16) / 2;
+    frame
+        .buffer_mut()
+        .set_string(inner.x + pad, y, text, Style::new().fg(Color::DarkGray));
 }
 
 /// Renderiza la lista de recomendaciones (o un aviso si está vacía).
@@ -338,13 +382,21 @@ pub fn render_tracks_list(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::visualization::VisualState;
     use ratatui::backend::TestBackend;
+
+    fn visual_with_palette(cover: Option<[[u8; 3]; 3]>) -> VisualState {
+        let mut s = VisualState::inactive();
+        s.scene.palette = VisualPalette::from_cover(cover);
+        s
+    }
 
     fn render_state(
         synced: Option<SyncLyrics>,
         position: Duration,
         finished: bool,
-        palette: Option<[[u8; 3]; 3]>,
+        mode: VisualContent,
+        cover: Option<[[u8; 3]; 3]>,
     ) -> ratatui::buffer::Buffer {
         let mut state = RelatedState {
             synced,
@@ -360,8 +412,8 @@ mod tests {
                     &mut state,
                     Some(position),
                     finished,
-                    palette,
-                    &crate::visualization::VisualState::inactive(),
+                    mode,
+                    &visual_with_palette(cover),
                     &None,
                     &mut false,
                     &std::collections::HashMap::new(),
@@ -380,19 +432,37 @@ mod tests {
         let sync = SyncLyrics::parse("[00:05] uno\n[00:10] dos\n");
 
         // En mitad de la canción la línea activa se muestra.
-        let mid = render_state(Some(sync.clone()), Duration::from_secs(7), false, None);
+        let mid = render_state(
+            Some(sync.clone()),
+            Duration::from_secs(7),
+            false,
+            VisualContent::Auto,
+            None,
+        );
         assert!(buffer_text(&mid).contains("dos"), "línea activa visible");
 
         // Superada la última marca, durante el outro la última línea se queda
         // (el karaoke no se limpia antes del fin real).
-        let outro = render_state(Some(sync.clone()), Duration::from_secs(11), false, None);
+        let outro = render_state(
+            Some(sync.clone()),
+            Duration::from_secs(11),
+            false,
+            VisualContent::Auto,
+            None,
+        );
         assert!(
             buffer_text(&outro).contains("dos"),
             "durante el outro la última línea sigue visible"
         );
 
         // Al terminar la reproducción (fin real) sí se limpia todo.
-        let done = render_state(Some(sync), Duration::from_secs(11), true, None);
+        let done = render_state(
+            Some(sync),
+            Duration::from_secs(11),
+            true,
+            VisualContent::Auto,
+            None,
+        );
         let text = buffer_text(&done);
         assert!(
             !text.contains("dos") && !text.contains("uno"),
@@ -405,14 +475,26 @@ mod tests {
         // La canción dura 180s pero el LRC termina a los 10s (outro largo):
         // la última línea sigue visible mientras suena el outro.
         let sync = SyncLyrics::parse("[00:05] uno\n[00:10] dos\n");
-        let buf = render_state(Some(sync.clone()), Duration::from_secs(60), false, None);
+        let buf = render_state(
+            Some(sync.clone()),
+            Duration::from_secs(60),
+            false,
+            VisualContent::Auto,
+            None,
+        );
         assert!(
             buffer_text(&buf).contains("dos"),
             "durante el outro la última línea se queda (no se limpia a los 10s)"
         );
 
         // Durante la última línea aún se ve.
-        let singing = render_state(Some(sync), Duration::from_secs(10), false, None);
+        let singing = render_state(
+            Some(sync),
+            Duration::from_secs(10),
+            false,
+            VisualContent::Auto,
+            None,
+        );
         assert!(
             buffer_text(&singing).contains("dos"),
             "durante la última línea aún se ve"
@@ -424,7 +506,13 @@ mod tests {
         // El LRC marca la última línea a los 200s pero la canción acaba a los
         // 180s: al llegar al fin real sí se limpia (no se queda colgado).
         let sync = SyncLyrics::parse("[00:05] uno\n[03:20] dos\n");
-        let buf = render_state(Some(sync), Duration::from_secs(180), true, None);
+        let buf = render_state(
+            Some(sync),
+            Duration::from_secs(180),
+            true,
+            VisualContent::Auto,
+            None,
+        );
         let text = buffer_text(&buf);
         assert!(
             !text.contains("dos"),
@@ -440,6 +528,7 @@ mod tests {
             Some(sync),
             Duration::from_secs(12),
             false,
+            VisualContent::Auto,
             Some([[255, 0, 0], [0, 255, 0], [0, 0, 255]]),
         );
         let cells: Vec<(&str, Color)> = buf.content().iter().map(|c| (c.symbol(), c.fg)).collect();
@@ -465,8 +554,8 @@ mod tests {
 
     #[test]
     fn unavailable_lyrics_show_clean_state_without_plain_fallback() {
-        // LRCLIB no devolvió `syncedLyrics`: debe verse el estado limpio y
-        // jamás la letra plana amarilla de la implementación antigua.
+        // LRCLIB no devolvió `syncedLyrics`: en modo Letras (explícito) debe
+        // verse el estado limpio y jamás la letra plana amarilla antigua.
         let mut state = RelatedState::default();
         state.set_synced(None);
 
@@ -480,8 +569,8 @@ mod tests {
                     &mut state,
                     Some(Duration::from_secs(5)),
                     false,
-                    None,
-                    &crate::visualization::VisualState::inactive(),
+                    VisualContent::Lyrics,
+                    &visual_with_palette(None),
                     &None,
                     &mut false,
                     &std::collections::HashMap::new(),
@@ -501,10 +590,61 @@ mod tests {
     }
 
     #[test]
-    fn palette_colors_falls_back_without_palette() {
-        assert_eq!(
-            palette_colors(None),
-            (Color::DarkGray, Color::White, Color::Yellow)
+    fn explicit_visual_mode_overrides_lyrics() {
+        // El usuario eligió "visual" (`v`): aunque haya letras, la banda se
+        // dedica al visualizador y no se pisan letras.
+        let sync = SyncLyrics::parse("[00:05] una linea oculta\n");
+        let buf = render_state(
+            Some(sync),
+            Duration::from_secs(10),
+            false,
+            VisualContent::Visual,
+            None,
         );
+        let text = buffer_text(&buf);
+        assert!(
+            !text.contains("una linea oculta"),
+            "en modo visual no se pintan las letras"
+        );
+    }
+
+    #[test]
+    fn karaoke_colors_map_from_palette() {
+        let p = VisualPalette::fallback();
+        let (read, cur, unread) = karaoke_colors(&p);
+        assert_eq!(
+            read,
+            Color::Rgb(p.secondary[0], p.secondary[1], p.secondary[2])
+        );
+        assert_eq!(cur, Color::Rgb(p.primary[0], p.primary[1], p.primary[2]));
+        assert_eq!(unread, Color::Rgb(p.accent[0], p.accent[1], p.accent[2]));
+    }
+
+    #[test]
+    fn band_content_resolves_from_mode() {
+        assert!(matches!(
+            BandContent::resolve(VisualContent::Auto, true, false),
+            BandContent::Lyrics
+        ));
+        assert!(matches!(
+            BandContent::resolve(VisualContent::Auto, false, false),
+            BandContent::Visual
+        ));
+        assert!(matches!(
+            BandContent::resolve(VisualContent::Lyrics, false, true),
+            BandContent::Unavailable
+        ));
+        assert!(matches!(
+            BandContent::resolve(VisualContent::Lyrics, false, false),
+            BandContent::Waiting
+        ));
+        assert!(matches!(
+            BandContent::resolve(VisualContent::Lyrics, true, false),
+            BandContent::Lyrics
+        ));
+        assert!(matches!(
+            BandContent::resolve(VisualContent::Visual, true, false),
+            BandContent::Visual
+        ));
     }
 }

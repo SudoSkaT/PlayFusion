@@ -63,13 +63,9 @@ pub fn render(
         .and_then(|t| thumbnails.get(&t.identifier()));
     song_card::render(frame, chunks[0], playback.track.as_ref(), state, frame_anim);
     if vis_h > 0 {
-        visualizer::render(
-            frame,
-            chunks[1],
-            visual,
-            playback.position.as_secs_f32(),
-            track_palette(playback, thumbnails),
-        );
+        // La banda del visual es COMPOSICIÓN completa (lava ambiental + barras);
+        // la paleta de la portada ya la fundió el motor en `visual.scene.palette`.
+        visualizer::render(frame, chunks[1], visual, playback.position.as_secs_f32());
     }
     progress_bar::render(frame, chunks[2], playback, frame_anim);
 
@@ -143,20 +139,4 @@ fn render_controls(
         Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" Controles ")),
         area,
     );
-}
-
-/// Paleta de tres colores dominantes de la portada del track en curso, si la
-/// miniatura ya está decodificada. Se usa para colorear las barras del visual.
-fn track_palette(
-    playback: &PlaybackStatus,
-    thumbnails: &std::collections::HashMap<String, ThumbnailState>,
-) -> Option<[[u8; 3]; 3]> {
-    playback
-        .track
-        .as_ref()
-        .and_then(|t| thumbnails.get(&t.identifier()))
-        .and_then(|state| match state {
-            ThumbnailState::Loaded(img) => img.palette,
-            _ => None,
-        })
 }

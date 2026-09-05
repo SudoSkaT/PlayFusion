@@ -136,17 +136,22 @@ fn main() {
 
     let mut engine = VisualEngine::new(ParameterMapper::default());
     let mut pos_ms = 0u64;
+    let palette = playfusion::visualization::VisualPalette::from_cover(Some([
+        [220, 60, 120],
+        [60, 160, 240],
+        [240, 180, 90],
+    ]));
     bench("visual engine update", vis_budget, || {
         pos_ms += 66;
-        black_box(engine.update(Some(&feats), Duration::from_millis(pos_ms)));
+        black_box(engine.update(Some(&feats), Duration::from_millis(pos_ms), &palette));
     });
 
-    let state = engine.update(Some(&feats), Duration::from_secs(3));
+    let state = engine.update(Some(&feats), Duration::from_secs(3), &palette);
     bench("render TUI completo (80×5)", vis_budget, || {
         let backend = ratatui::backend::TestBackend::new(80, 5);
         let mut term = ratatui::Terminal::new(backend).unwrap();
         term.draw(|f| {
-            playfusion::visualization::render::render(f, f.area(), black_box(&state), 42.0, None)
+            playfusion::visualization::render::render(f, f.area(), black_box(&state), 42.0)
         })
         .unwrap();
     });
