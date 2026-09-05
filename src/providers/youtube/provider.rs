@@ -15,16 +15,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use futures_util::StreamExt;
 use rustypipe::client::{ClientType, RustyPipe};
 use rustypipe::model::{MusicAlbum, MusicArtist};
 
 use super::lyrics::fetch_lrclib_lyrics;
 use super::mapper::{best_thumbnail, map_track, THUMB_FALLBACK};
 use crate::catalog::{CatalogError as ProviderError, CatalogProvider};
-use crate::media::FailureCategory;
 use crate::domain::source::Source;
 use crate::domain::{album::Album, artist::Artist, track::Track};
+use crate::media::FailureCategory;
 
 /// Directorio donde rustypipe guarda su caché (`rustypipe_cache.json`,
 /// `bg_snapshot.bin` y reportes) para no persistir en la raíz del proyecto.
@@ -109,7 +108,8 @@ type ResolveOutcome = Result<Option<String>, CategorizedFail>;
 /// Registro de resoluciones en curso (`video_id` → estado compartido): cada
 /// entrada es el `Arc<Mutex<Option<ResolveOutcome>>>` que rellena el hilo
 /// "resolver" y que esperan los hilos concurrentes del mismo video.
-type InflightRegistry = tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<Option<ResolveOutcome>>>>>;
+type InflightRegistry =
+    tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<Option<ResolveOutcome>>>>>;
 
 /// Entrada de la caché de streams.
 struct CachedStream {
@@ -177,11 +177,7 @@ impl YoutubeProvider {
 
         let related = match details.related_id {
             Some(id) => match self.client.query().music_related(id).await {
-                Ok(related) => related
-                    .tracks
-                    .into_iter()
-                    .map(|t| map_track(&t))
-                    .collect(),
+                Ok(related) => related.tracks.into_iter().map(|t| map_track(&t)).collect(),
                 Err(_) => Vec::new(),
             },
             None => Vec::new(),
@@ -192,11 +188,7 @@ impl YoutubeProvider {
         // siempre responde con canciones afines.
         if related.is_empty() {
             if let Ok(radio) = self.client.query().music_radio_track(video_id).await {
-                return radio
-                    .items
-                    .into_iter()
-                    .map(|t| map_track(&t))
-                    .collect();
+                return radio.items.into_iter().map(|t| map_track(&t)).collect();
             }
         }
 
@@ -233,7 +225,8 @@ impl YoutubeProvider {
         // Sonda lejana: solo tiene sentido si el archivo supera la frontera.
         if clen > FAR_PROBE_START + FAR_PROBE_LEN {
             return matches!(
-                self.range_probe(url, FAR_PROBE_START, FAR_PROBE_START + FAR_PROBE_LEN - 1).await,
+                self.range_probe(url, FAR_PROBE_START, FAR_PROBE_START + FAR_PROBE_LEN - 1)
+                    .await,
                 Some(206)
             );
         }
@@ -283,10 +276,7 @@ impl YoutubeProvider {
     /// llegan después esperan (con timeout) su resultado en vez de repetir toda
     /// la ronda de visitor/player/verificación, que encadena peticiones y
     /// arriesga el anti-bot.
-    async fn shared_resolve(
-        &self,
-        video_id: &str,
-    ) -> Result<Option<String>, CategorizedFail> {
+    async fn shared_resolve(&self, video_id: &str) -> Result<Option<String>, CategorizedFail> {
         // Si ya hay un resolver en marcha para este video, esperar su
         // resultado (con timeout) en vez de repetir toda la ronda. Si el
         // resolver colgó (red muerta), se toma el relevo registrándose.
@@ -342,9 +332,7 @@ impl YoutubeProvider {
     }
 
     /// Clona el resultado compartido (la causa ya viaja clasificada).
-    fn outcome_to_result(
-        outcome: &ResolveOutcome,
-    ) -> Result<Option<String>, CategorizedFail> {
+    fn outcome_to_result(outcome: &ResolveOutcome) -> Result<Option<String>, CategorizedFail> {
         match outcome {
             Ok(url) => Ok(url.clone()),
             Err(fail) => Err(fail.clone()),
@@ -777,8 +765,6 @@ mod tests {
     use super::*;
     use crate::domain::track::Thumbnail as TrackThumbnail;
 
-
-
     #[test]
     fn thumbnail_candidates_prefer_api_then_rebuild() {
         let mut track = sample_track();
@@ -823,12 +809,4 @@ mod tests {
         });
         track
     }
-
-
-
-
-
-
-
-
 }

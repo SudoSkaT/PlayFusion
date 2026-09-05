@@ -26,8 +26,8 @@ use crate::domain::track::Track;
 
 use crate::media::cache::ResolutionCache;
 use crate::media::failure::{FailureCategory, ResolutionError};
-use crate::media::policy::PolicyAction;
 use crate::media::policy::FailurePolicy;
+use crate::media::policy::PolicyAction;
 use crate::media::provider::ResolveContext;
 use crate::media::registry::StreamRegistry;
 use crate::media::router;
@@ -100,7 +100,11 @@ impl std::fmt::Display for ResolveError {
         write!(f, "no se pudo resolver «{}»", self.key)?;
         if !self.attempts.is_empty() {
             write!(f, " tras {} intento(s)", self.attempts.len())?;
-            let chain: Vec<String> = self.attempts.iter().map(|a| a.provider_id.to_string()).collect();
+            let chain: Vec<String> = self
+                .attempts
+                .iter()
+                .map(|a| a.provider_id.to_string())
+                .collect();
             write!(f, " ({})", chain.join(" → "))?;
         }
         write!(f, ": {}", self.root)
@@ -207,10 +211,7 @@ impl StreamResolver {
     }
 
     /// Camino de red completo (sin leer caché): router → intentos → política.
-    async fn resolve_inner(
-        &self,
-        track: &Track,
-    ) -> Result<StreamResolution, ResolveError> {
+    async fn resolve_inner(&self, track: &Track) -> Result<StreamResolution, ResolveError> {
         let key = track.identifier();
         let now = Instant::now();
         let snapshots = self.registry.snapshot(track, now);
@@ -244,8 +245,11 @@ impl StreamResolver {
             loop {
                 total_attempts += 1;
                 let started = Instant::now();
-                let outcome =
-                    tokio::time::timeout(self.config.attempt_timeout, candidate.provider.resolve(track, &ctx)).await;
+                let outcome = tokio::time::timeout(
+                    self.config.attempt_timeout,
+                    candidate.provider.resolve(track, &ctx),
+                )
+                .await;
                 let latency = started.elapsed();
 
                 let result = match outcome {
@@ -253,7 +257,10 @@ impl StreamResolver {
                     Err(_elapsed) => Err(ResolutionError::new(
                         FailureCategory::Timeout,
                         candidate.source,
-                        format!("{} no respondió en {:?}", candidate.id, self.config.attempt_timeout),
+                        format!(
+                            "{} no respondió en {:?}",
+                            candidate.id, self.config.attempt_timeout
+                        ),
                     )),
                 };
 
@@ -334,7 +341,11 @@ impl StreamResolver {
             root_category = %root.category,
             "resolution_failed"
         );
-        Err(ResolveError { key, attempts, root })
+        Err(ResolveError {
+            key,
+            attempts,
+            root,
+        })
     }
 }
 
@@ -389,8 +400,7 @@ mod tests {
             }
         }
         fn kill(&self) {
-            self.alive
-                .store(false, std::sync::atomic::Ordering::SeqCst);
+            self.alive.store(false, std::sync::atomic::Ordering::SeqCst);
         }
     }
     #[async_trait]
@@ -426,8 +436,7 @@ mod tests {
 
         // Entrada ya caducada sembrada a mano.
         let mut stale = StreamResolution::new(Source::YouTube, "https://cdn.fake/stale");
-        stale.expires_at =
-            Some(chrono::Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap());
+        stale.expires_at = Some(chrono::Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap());
         cache.put("v1", stale).await;
 
         let r = resolver(reg, cache.clone(), fast_policy());
@@ -472,7 +481,11 @@ mod tests {
         reg.register_with_circuit(a.clone(), CircuitConfig::default());
         reg.register_with_circuit(b.clone(), CircuitConfig::default());
 
-        let r = resolver(reg, Arc::new(MemoryResolutionCache::default()), fast_policy());
+        let r = resolver(
+            reg,
+            Arc::new(MemoryResolutionCache::default()),
+            fast_policy(),
+        );
         let res = r.resolve(&yt_track("v1")).await.unwrap();
         assert_eq!(res.uri, "https://cdn.fake/de-b");
         assert_eq!(res.provider, Source::YouTube);
@@ -492,7 +505,11 @@ mod tests {
         reg.register(a.clone());
         reg.register(b.clone());
 
-        let r = resolver(reg, Arc::new(MemoryResolutionCache::default()), fast_policy());
+        let r = resolver(
+            reg,
+            Arc::new(MemoryResolutionCache::default()),
+            fast_policy(),
+        );
         assert!(r.resolve(&yt_track("v1")).await.is_ok());
         assert_eq!(a.call_count(), 1, "determinista: sin reintento");
     }
@@ -511,7 +528,11 @@ mod tests {
         reg.register(b.clone());
 
         // retries_per_provider=1 → A se intenta 2 veces y luego cae a B.
-        let r = resolver(reg, Arc::new(MemoryResolutionCache::default()), fast_policy());
+        let r = resolver(
+            reg,
+            Arc::new(MemoryResolutionCache::default()),
+            fast_policy(),
+        );
         let res = r.resolve(&yt_track("v1")).await.unwrap();
         assert_eq!(res.uri, "https://cdn.fake/de-b");
         assert_eq!(a.call_count(), 2, "primer intento + un reintento");
@@ -546,13 +567,20 @@ mod tests {
         assert_eq!(err.attempts.len(), 2);
         assert_eq!(err.root.message, "causa raíz A", "el primer motivo manda");
         assert_eq!(err.root.category, FailureCategory::NetworkFailure);
-        assert!(err.to_string().contains("a"), "la cadena de intentos es visible");
+        assert!(
+            err.to_string().contains("a"),
+            "la cadena de intentos es visible"
+        );
     }
 
     #[tokio::test]
     async fn no_candidates_reports_provider_unavailable() {
         let reg = Arc::new(StreamRegistry::new()); // vacío
-        let r = resolver(reg, Arc::new(MemoryResolutionCache::default()), fast_policy());
+        let r = resolver(
+            reg,
+            Arc::new(MemoryResolutionCache::default()),
+            fast_policy(),
+        );
         let err = r.resolve(&yt_track("v1")).await.unwrap_err();
         assert_eq!(err.root.category, FailureCategory::ProviderUnavailable);
         assert!(err.attempts.is_empty());
@@ -567,7 +595,11 @@ mod tests {
         reg.register(b);
         assert!(reg.set_enabled("a", false));
 
-        let r = resolver(reg, Arc::new(MemoryResolutionCache::default()), fast_policy());
+        let r = resolver(
+            reg,
+            Arc::new(MemoryResolutionCache::default()),
+            fast_policy(),
+        );
         let res = r.resolve(&yt_track("v1")).await.unwrap();
         assert_eq!(res.uri, "https://cdn.fake/de-b");
         assert_eq!(a.call_count(), 0, "apagado en caliente: ni una llamada");
@@ -588,10 +620,18 @@ mod tests {
         reg.register(b.clone());
         reg.record_failure("a"); // umbral 1 → abierto
 
-        let r = resolver(reg, Arc::new(MemoryResolutionCache::default()), fast_policy());
+        let r = resolver(
+            reg,
+            Arc::new(MemoryResolutionCache::default()),
+            fast_policy(),
+        );
         let res = r.resolve(&yt_track("v1")).await.unwrap();
         assert_eq!(res.uri, "https://cdn.fake/de-b");
-        assert_eq!(a.call_count(), 0, "circuito abierto: el provider no se molesta");
+        assert_eq!(
+            a.call_count(),
+            0,
+            "circuito abierto: el provider no se molesta"
+        );
     }
 
     #[tokio::test]
@@ -663,7 +703,11 @@ mod tests {
         reg.register(bad);
         reg.register(good.clone());
 
-        let r = resolver(reg, Arc::new(MemoryResolutionCache::default()), fast_policy());
+        let r = resolver(
+            reg,
+            Arc::new(MemoryResolutionCache::default()),
+            fast_policy(),
+        );
         let res = r.resolve(&yt_track("v1")).await.unwrap();
         assert_eq!(res.uri, "https://cdn.fake/de-good");
         assert_eq!(good.call_count(), 1);

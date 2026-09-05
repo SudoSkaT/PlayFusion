@@ -134,10 +134,7 @@ impl Config {
 
     /// Aplica la política de proxy a un builder de cliente HTTP propio:
     /// con `proxy=false` se IGNORAN las variables del entorno (`.no_proxy()`).
-    pub fn apply_proxy_policy(
-        &self,
-        builder: reqwest::ClientBuilder,
-    ) -> reqwest::ClientBuilder {
+    pub fn apply_proxy_policy(&self, builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
         if self.flags.proxy {
             builder
         } else {

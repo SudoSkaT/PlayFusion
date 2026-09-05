@@ -17,7 +17,10 @@ pub struct SpectrumAnalyzer {
 
 impl SpectrumAnalyzer {
     pub fn new(fft_size: usize) -> Self {
-        assert!(fft_size.is_power_of_two(), "fft_size debe ser potencia de 2");
+        assert!(
+            fft_size.is_power_of_two(),
+            "fft_size debe ser potencia de 2"
+        );
         let mut planner = FftPlanner::new();
         let fft = planner.plan_fft_forward(fft_size);
         let scratch = vec![Complex::new(0.0, 0.0); fft.get_inplace_scratch_len()];
@@ -57,9 +60,13 @@ impl SpectrumAnalyzer {
         // El buffer complejo sí se reutiliza entre llamadas del mismo analyzer.
         self.cplx.clear();
         self.cplx.extend(
-            samples.iter().zip(&self.window).map(|(&s, &w)| Complex::new(s * w, 0.0)),
+            samples
+                .iter()
+                .zip(&self.window)
+                .map(|(&s, &w)| Complex::new(s * w, 0.0)),
         );
-        self.fft.process_with_scratch(&mut self.cplx, &mut self.scratch);
+        self.fft
+            .process_with_scratch(&mut self.cplx, &mut self.scratch);
         out.clear();
         out.extend(self.cplx[..n / 2].iter().map(|c| c.norm()));
     }
@@ -72,7 +79,9 @@ pub fn hann_window(size: usize) -> Vec<f32> {
         return vec![1.0; size];
     }
     (0..size)
-        .map(|i| 0.5 * (1.0 - (2.0 * std::f64::consts::PI * i as f64 / (size - 1) as f64).cos()) as f32)
+        .map(|i| {
+            0.5 * (1.0 - (2.0 * std::f64::consts::PI * i as f64 / (size - 1) as f64).cos()) as f32
+        })
         .collect()
 }
 

@@ -71,7 +71,16 @@ fn host_of(url: &str) -> String {
 
 /// Nombres de parámetros de query + valores inofensivos seleccionados.
 fn describe_query(url: &str) -> Vec<(String, Option<String>)> {
-    const SAFE: &[&str] = &["itag", "mime", "clen", "dur", "expire", "alr", "keepalive", "c"];
+    const SAFE: &[&str] = &[
+        "itag",
+        "mime",
+        "clen",
+        "dur",
+        "expire",
+        "alr",
+        "keepalive",
+        "c",
+    ];
     let Some(q) = url.split('?').nth(1) else {
         return Vec::new();
     };
@@ -251,9 +260,7 @@ async fn trace_redirects(http: &reqwest::Client, url: &str, headers: &[(String, 
                     .get("content-range")
                     .and_then(|v| v.to_str().ok())
                     .map(str::to_string);
-                println!(
-                    "hop final sirvió el rango: status={status} content-range={cr:?}"
-                );
+                println!("hop final sirvió el rango: status={status} content-range={cr:?}");
                 return;
             }
         }
@@ -273,9 +280,10 @@ async fn main() -> anyhow::Result<()> {
 
     let provider = YouTubeAdapter::new();
     let results = provider.search_tracks("Queen Bohemian Rhapsody", 3).await?;
-    let track: Track = results.first().cloned().ok_or_else(|| {
-        anyhow::anyhow!("sin resultados")
-    })?;
+    let track: Track = results
+        .first()
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("sin resultados"))?;
     println!(
         "pista: {} — video_id={} (única StreamResolution para todo el experimento)",
         track.title,

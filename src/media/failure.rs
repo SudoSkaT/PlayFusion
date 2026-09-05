@@ -115,11 +115,7 @@ pub struct ResolutionError {
 }
 
 impl ResolutionError {
-    pub fn new(
-        category: FailureCategory,
-        provider: Source,
-        message: impl Into<String>,
-    ) -> Self {
+    pub fn new(category: FailureCategory, provider: Source, message: impl Into<String>) -> Self {
         Self {
             category,
             provider,
@@ -176,11 +172,7 @@ mod tests {
 
     #[test]
     fn error_display_carries_provider_category_and_message() {
-        let e = ResolutionError::new(
-            C::StreamExpired,
-            Source::YouTube,
-            "la URL respondió 403",
-        );
+        let e = ResolutionError::new(C::StreamExpired, Source::YouTube, "la URL respondió 403");
         assert_eq!(
             e.to_string(),
             "YouTube: stream caducado: la URL respondió 403"

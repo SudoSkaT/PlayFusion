@@ -26,9 +26,9 @@ pub mod policy;
 pub mod provider;
 pub mod registry;
 pub mod resolver;
-pub mod transport;
 #[cfg(test)]
 pub mod test_support;
+pub mod transport;
 
 // El router es puro y se usa vía `crate::media::router::order`; se exporta
 // como módulo para mantener la función libre.

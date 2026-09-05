@@ -38,10 +38,7 @@ pub struct SweepReport {
 
 impl ExpirationManager {
     pub fn new(cache: Arc<dyn ResolutionCache>, near_window: Duration) -> Self {
-        Self {
-            cache,
-            near_window,
-        }
+        Self { cache, near_window }
     }
 
     /// Ventana preventiva configurada.
@@ -105,8 +102,7 @@ mod tests {
         cache.put("soon", soon).await;
         cache.put("immortal", immortal).await;
 
-        let manager =
-            ExpirationManager::new(cache.clone(), Duration::from_secs(5 * 60));
+        let manager = ExpirationManager::new(cache.clone(), Duration::from_secs(5 * 60));
         let report = manager.sweep().await;
 
         assert_eq!(report.purged, vec!["dead".to_string()]);

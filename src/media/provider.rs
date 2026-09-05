@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 
-use crate::domain::{source::Source, track::Track, stream::StreamResolution};
+use crate::domain::{source::Source, stream::StreamResolution, track::Track};
 use crate::media::failure::ResolutionError;
 
 /// Contexto de una resolución individual.

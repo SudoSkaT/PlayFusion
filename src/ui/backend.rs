@@ -17,11 +17,13 @@ use crate::domain::track::Track;
 use crate::infrastructure::config::{Config, ConfigForm};
 use crate::infrastructure::db::Db;
 use crate::infrastructure::playback;
-use crate::playback::{QueueManager, RecoveryAction, RecoveryBudget, decide_recovery};
+use crate::playback::{decide_recovery, QueueManager, RecoveryAction, RecoveryBudget};
 use crate::recommendation::acoustic_aggregator::AcousticAggregator;
 use crate::recommendation::signals::{PlayContext, SignalKind};
 use crate::recommendation::types::UserProfile;
-use crate::recommendation::{aggregate_signals, metadata_similarity, negative_penalty, user_affinity};
+use crate::recommendation::{
+    aggregate_signals, metadata_similarity, negative_penalty, user_affinity,
+};
 
 use super::event::BackendEvent;
 
@@ -49,7 +51,10 @@ pub enum BackendCommand {
     /// Cambia el volumen (0-100).
     Volume(u8),
     /// Pide letra sincronizada (LRCLIB) y recomendados de un video.
-    LoadRelated(Box<Track>),
+    /// Pide recomendaciones + letra para `track`. `generation` identifica la
+    /// sesión en vuelo de la UI: la respuesta la repite y la UI la exige para
+    /// no aplicar contenido de una sesión anterior.
+    LoadRelated(Box<Track>, u64),
     /// Resuelve y cachea la miniatura de un track (para mostrarla en la TUI).
     Thumbnail(Box<Track>),
     /// Activa/desactiva la reproducción automática de recomendaciones.
@@ -198,7 +203,11 @@ impl Backend {
     /// reintentos acotados, fallback entre proveedores, expiración) vive en el
     /// [`crate::media::StreamResolver`]; aquí solo queda la entrega al motor.
     async fn play_track(&self, track: &Track) -> Result<PlaybackStatus, String> {
-        let resolution = self.resolver.resolve(track).await.map_err(|e| e.to_string())?;
+        let resolution = self
+            .resolver
+            .resolve(track)
+            .await
+            .map_err(|e| e.to_string())?;
         let media_source = resolution
             .media_source()
             .ok_or_else(|| format!("resolución no reproducible para {}", track.source))?;
@@ -421,9 +430,7 @@ impl Backend {
                 // (Los contextos Queue/Autoplay salen de `skip_track` y
                 // `autoplay_next`.)
                 match self.start_and_record(*track, PlayContext::Manual).await {
-                    Ok((status, stats)) => {
-                        Some(BackendEvent::PlaybackStarted { status, stats })
-                    }
+                    Ok((status, stats)) => Some(BackendEvent::PlaybackStarted { status, stats }),
                     Err(e) => Some(BackendEvent::PlaybackError(e)),
                 }
             }
@@ -437,7 +444,7 @@ impl Backend {
                 Ok(None) => None,
                 Err(e) => Some(BackendEvent::Message(e)),
             },
-            BackendCommand::LoadRelated(track) => {
+            BackendCommand::LoadRelated(track, generation) => {
                 let track = *track;
                 let video_id = track.external_id.clone().unwrap_or_default();
                 // Recomendados desde YouTube Music (solo esa parte).
@@ -482,6 +489,7 @@ impl Backend {
                     track: Box::new(track),
                     related,
                     synced,
+                    generation,
                 })
             }
             BackendCommand::Thumbnail(track) => {
@@ -567,13 +575,21 @@ impl Backend {
     async fn skip_track(
         &self,
         forward: bool,
-    ) -> Result<Option<(PlaybackStatus, Vec<crate::infrastructure::storage::TrackListeningStats>)>, String> {
+    ) -> Result<
+        Option<(
+            PlaybackStatus,
+            Vec<crate::infrastructure::storage::TrackListeningStats>,
+        )>,
+        String,
+    > {
         let next = {
             let mut queue = self.queue.lock().await;
             queue.pick(forward, None)
         };
         let Some(next) = next else {
-            return Err("Sin cola de recomendaciones. Reproduce una canción para cargarlas.".to_string());
+            return Err(
+                "Sin cola de recomendaciones. Reproduce una canción para cargarlas.".to_string(),
+            );
         };
         // El usuario saltó la canción que estaba sonando: se registra como señal
         // `Skip` (con el contexto en que se reprodujo) ANTES de pisar el track
@@ -597,7 +613,14 @@ impl Backend {
         let Some(track_id) = track_id else { return };
         let _ = self
             .db
-            .record_signal(track_id, SignalKind::Skip, ctx.unwrap_or(PlayContext::Manual), None, None, None)
+            .record_signal(
+                track_id,
+                SignalKind::Skip,
+                ctx.unwrap_or(PlayContext::Manual),
+                None,
+                None,
+                None,
+            )
             .await;
     }
 
@@ -611,7 +634,10 @@ impl Backend {
             (
                 track.as_ref().and_then(|t| (t.id > 0).then_some(t.id)),
                 ctx,
-                track.as_ref().and_then(|t| t.duration).map(|d| d.as_millis() as i64),
+                track
+                    .as_ref()
+                    .and_then(|t| t.duration)
+                    .map(|d| d.as_millis() as i64),
             )
         };
         if let Some(track_id) = track_id {
@@ -632,7 +658,12 @@ impl Backend {
             }
             // Perfil acústico: si hubo suficientes frames, se persiste para
             // que el ranking local pueda comparar por sonido sin re-analizar.
-            let profile = self.acoustic_since.lock().await.take().and_then(|a| a.into_profile());
+            let profile = self
+                .acoustic_since
+                .lock()
+                .await
+                .take()
+                .and_then(|a| a.into_profile());
             if let Some(p) = profile {
                 let _ = self.db.save_acoustic_profile(&p).await;
             }
@@ -647,13 +678,16 @@ impl Backend {
     /// Falla silencioso: si algo no se puede cargar (red de señales, acústica)
     /// se conserva la lista original — el descubrimiento siempre funciona.
     async fn reorder_by_local_taste(&self, related: &mut Vec<Track>) {
-        let Ok(signals) = self.db.all_signals(20_000).await else { return };
+        let Ok(signals) = self.db.all_signals(20_000).await else {
+            return;
+        };
         if signals.is_empty() {
             return;
         }
-        let (Ok(all_tracks), Ok(acoustic_profiles)) =
-            (self.db.all_tracks().await, self.db.all_acoustic_profiles().await)
-        else {
+        let (Ok(all_tracks), Ok(acoustic_profiles)) = (
+            self.db.all_tracks().await,
+            self.db.all_acoustic_profiles().await,
+        ) else {
             return;
         };
         let mut tracks_map = HashMap::new();
@@ -718,7 +752,11 @@ impl Backend {
         if self.queue.lock().await.last_played() != finished_after.as_deref() {
             return Ok(None);
         }
-        let next = self.queue.lock().await.pick(true, finished_after.as_deref())
+        let next = self
+            .queue
+            .lock()
+            .await
+            .pick(true, finished_after.as_deref())
             .ok_or_else(|| "sin siguiente recomendación".to_string())?;
         match self.start_and_record(next, PlayContext::Autoplay).await {
             Ok(result) => Ok(Some(result)),
@@ -990,7 +1028,7 @@ fn is_heavy(cmd: &BackendCommand) -> bool {
             | BackendCommand::Play(_)
             | BackendCommand::NextTrack
             | BackendCommand::PrevTrack
-            | BackendCommand::LoadRelated(_)
+            | BackendCommand::LoadRelated(..)
             | BackendCommand::Thumbnail(_)
             | BackendCommand::Seek(..)
             | BackendCommand::ListPlaylists
@@ -1052,7 +1090,10 @@ mod tests {
         let ev_decode = PlaybackEvent::Error("decodificar stream: malo".to_string());
 
         assert_eq!(decide_recovery(&ev_decode), RecoveryAction::Report);
-        assert_eq!(decide_recovery(&ev_transport), RecoveryAction::RefreshAndResume);
+        assert_eq!(
+            decide_recovery(&ev_transport),
+            RecoveryAction::RefreshAndResume
+        );
 
         let mut budget = RecoveryBudget::default();
         budget.arm("song");

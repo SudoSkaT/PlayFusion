@@ -23,6 +23,8 @@ use crate::infrastructure::storage::TrackListeningStats;
 use super::widgets::karaoke::KaraokeScroller;
 use crate::visualization::render as visualizer;
 
+use super::navigation::ListSelection;
+
 #[derive(Debug, Default)]
 pub struct RelatedState {
     pub tracks: Vec<Track>,
@@ -68,29 +70,29 @@ impl RelatedState {
     }
 
     pub fn select_next(&mut self) {
-        let n = self.tracks.len();
-        if n == 0 {
-            return;
-        }
-        let next = self.list_state.selected().map(|i| (i + 1) % n).unwrap_or(0);
-        self.list_state.select(Some(next));
+        self.step(true);
     }
 
     pub fn select_prev(&mut self) {
-        let n = self.tracks.len();
-        if n == 0 {
-            return;
-        }
-        let prev = self
-            .list_state
-            .selected()
-            .map(|i| (i + n - 1) % n)
-            .unwrap_or(0);
-        self.list_state.select(Some(prev));
+        self.step(false);
     }
 
     pub fn selected(&self) -> Option<&Track> {
         self.list_state.selected().and_then(|i| self.tracks.get(i))
+    }
+}
+
+impl super::navigation::ListSelection for RelatedState {
+    fn list_len(&self) -> usize {
+        self.tracks.len()
+    }
+
+    fn cursor(&self) -> Option<usize> {
+        self.list_state.selected()
+    }
+
+    fn set_cursor(&mut self, index: Option<usize>) {
+        self.list_state.select(index);
     }
 }
 
@@ -254,6 +256,7 @@ fn palette_colors(palette: Option<[[u8; 3]; 3]>) -> (Color, Color, Color) {
 /// La comparten la vista Related (lista completa) y el panel de la vista
 /// Now Playing. Acepta ratón para seleccionar la fila bajo el cursor; el
 /// scroll de la lista lo gestiona `ListState` automáticamente.
+#[allow(clippy::too_many_arguments)] // ratón/estadísticas son datos del render
 pub fn render_tracks_list(
     frame: &mut Frame,
     area: Rect,

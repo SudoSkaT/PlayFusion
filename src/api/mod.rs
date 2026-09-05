@@ -17,9 +17,7 @@ use crate::catalog::CatalogRegistry;
 /// streaming.
 pub fn build_providers() -> CatalogRegistry {
     let mut registry = CatalogRegistry::new();
-    registry.register(Box::new(
-        crate::providers::youtube::YouTubeAdapter::new(),
-    ));
+    registry.register(Box::new(crate::providers::youtube::YouTubeAdapter::new()));
     registry
 }
 
@@ -74,13 +72,10 @@ pub fn compose_media(
 
     let cache = std::sync::Arc::new(TwoTierCache::new(
         std::sync::Arc::new(MemoryResolutionCache::default()),
-        std::sync::Arc::new(
-            crate::infrastructure::storage::DbResolutionCache::new(db),
-        ),
+        std::sync::Arc::new(crate::infrastructure::storage::DbResolutionCache::new(db)),
     ));
 
-    let mut resolver =
-        StreamResolver::new(stream_registry, cache, ResolverConfig::default());
+    let mut resolver = StreamResolver::new(stream_registry, cache, ResolverConfig::default());
     if let Some(adapter) = adapter {
         resolver =
             resolver.with_validator(adapter as std::sync::Arc<dyn crate::media::StreamValidator>);

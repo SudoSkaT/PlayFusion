@@ -11,8 +11,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
-use crate::domain::stream::MediaSource;
 use crate::domain::source::Source;
+use crate::domain::stream::MediaSource;
 use crate::domain::track::Track;
 
 /// Estado de reproducción expuesto a la UI.

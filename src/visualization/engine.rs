@@ -107,7 +107,11 @@ impl VisualEngine {
             let wobble = ((phase * std::f32::consts::TAU * 3.0) + i as f32 * 0.7).sin();
             let target =
                 (params.bars[i] * (1.0 + wobble * 0.18 * params.turbulence)).clamp(0.0, 1.0);
-            let k = if target > self.prev_bars[i] { BAR_RISE } else { BAR_FALL };
+            let k = if target > self.prev_bars[i] {
+                BAR_RISE
+            } else {
+                BAR_FALL
+            };
             *slot = self.prev_bars[i] + (target - self.prev_bars[i]) * k;
         }
         self.prev_bars = bars;
@@ -179,7 +183,10 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(30));
         let s2 = e.update(Some(&f), Duration::from_millis(250));
         assert_eq!(s1.phase, s2.phase, "cero reloj visual independiente");
-        assert!((s1.phase - 0.5).abs() < 1e-4, "250 ms × 2 ciclos/s → fase ½");
+        assert!(
+            (s1.phase - 0.5).abs() < 1e-4,
+            "250 ms × 2 ciclos/s → fase ½"
+        );
     }
 
     #[test]

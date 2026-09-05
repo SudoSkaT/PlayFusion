@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 use playfusion::analysis::{
     bands::band_ratios,
     beat::BpmEstimator,
-    fft::SpectrumAnalyzer,
     features::AudioFeatures,
+    fft::SpectrumAnalyzer,
     onset::{FluxAnalyzer, OnsetDetector},
     ring::SpScRing,
     smoother::FeatureSmoother,
@@ -50,9 +50,7 @@ fn bench<F: FnMut()>(name: &str, budget: Duration, mut f: F) {
     }
     let per = start.elapsed() / ITERS;
     let ratio = budget.as_secs_f64() / per.as_secs_f64();
-    println!(
-        "{name:<34} {per:>10.1?}   presupuesto {budget:>10.1?}   margen ×{ratio:>7.0}"
-    );
+    println!("{name:<34} {per:>10.1?}   presupuesto {budget:>10.1?}   margen ×{ratio:>7.0}");
 }
 
 fn main() {
@@ -99,7 +97,10 @@ fn main() {
     });
 
     // Pipeline completo por hop (lo que hace el hilo de análisis).
-    let meta = StreamMeta { sample_rate: 44_100, channels: 2 };
+    let meta = StreamMeta {
+        sample_rate: 44_100,
+        channels: 2,
+    };
     let mut flux2 = FluxAnalyzer::new();
     bench("analyze_frame completo", hop_budget, || {
         let m = analyzer.magnitudes(&frame);
@@ -141,24 +142,14 @@ fn main() {
     });
 
     let state = engine.update(Some(&feats), Duration::from_secs(3));
-    bench(
-        "render TUI completo (80×5)",
-        vis_budget,
-        || {
-            let backend = ratatui::backend::TestBackend::new(80, 5);
-            let mut term = ratatui::Terminal::new(backend).unwrap();
-            term.draw(|f| {
-                playfusion::visualization::render::render(
-                    f,
-                    f.area(),
-                    black_box(&state),
-                    42.0,
-                    None,
-                )
-            })
-            .unwrap();
-        },
-    );
+    bench("render TUI completo (80×5)", vis_budget, || {
+        let backend = ratatui::backend::TestBackend::new(80, 5);
+        let mut term = ratatui::Terminal::new(backend).unwrap();
+        term.draw(|f| {
+            playfusion::visualization::render::render(f, f.area(), black_box(&state), 42.0, None)
+        })
+        .unwrap();
+    });
 
     println!("\n== Ring SPSC (throughput) ==");
     let ring = SpScRing::new(1 << 17);
@@ -190,7 +181,10 @@ fn main() {
 fn measure_engine_thread() {
     let runtime = AnalysisRuntime::spawn(AnalysisConfig::default());
     let tap = runtime.tap();
-    tap.announce(StreamMeta { sample_rate: 44_100, channels: 2 });
+    tap.announce(StreamMeta {
+        sample_rate: 44_100,
+        channels: 2,
+    });
     let bus = runtime.bus();
 
     // Alimenta ~3 s de audio a ritmo más rápido que real y cuenta publishes.

@@ -118,11 +118,7 @@ mod tests {
 
         let first = bus.publish(AudioFeatures::silent(Duration::from_millis(10)));
         assert_eq!(bus.latest().unwrap().timestamp, Duration::from_millis(10));
-        assert_eq!(
-            Arc::strong_count(&first),
-            2,
-            "bus + lector local"
-        );
+        assert_eq!(Arc::strong_count(&first), 2, "bus + lector local");
 
         // Un segundo publish reemplaza al anterior (los lectores viejos
         // conservan SU snapshot: inmutabilidad compartida).

@@ -10,8 +10,8 @@ use chrono::NaiveDate;
 use sqlx::sqlite::{Sqlite, SqliteQueryResult};
 use sqlx::{Row, Transaction};
 
-use crate::recommendation::types::TrackAcousticProfile;
 use crate::recommendation::signals::{PlayContext, PlaySignal, SignalKind};
+use crate::recommendation::types::TrackAcousticProfile;
 
 use crate::domain::{album::Album, artist::Artist, genre::Genre, source::Source, track::Track};
 
@@ -106,14 +106,13 @@ impl Db {
             .map(|r| HistoryEntry {
                 track_id: r.get("track_id"),
                 played_at: r.get("played_at"),
-                source: r.get::<Option<String>, _>("source")
-                    .as_deref()
-                    .map_or(Source::YouTube, |s| {
-                        match s {
-                            "youtube" => Source::YouTube,
-                            _ => Source::YouTube,
-                        }
-                    }),
+                source: r.get::<Option<String>, _>("source").as_deref().map_or(
+                    Source::YouTube,
+                    |s| match s {
+                        "youtube" => Source::YouTube,
+                        _ => Source::YouTube,
+                    },
+                ),
                 duration: r.get("duration"),
                 title: r.get("title"),
                 artist_name: r.get("artist_name"),
@@ -123,7 +122,11 @@ impl Db {
     }
 
     /// Obtiene el perfil acústico de un track específico.
-    pub async fn acoustic_profile_for_track(&self, track_id: i64) -> Result<Option<TrackAcousticProfile>> {        let row = sqlx::query(
+    pub async fn acoustic_profile_for_track(
+        &self,
+        track_id: i64,
+    ) -> Result<Option<TrackAcousticProfile>> {
+        let row = sqlx::query(
             "SELECT track_id, rms_mean, bass_mean, low_mid_mean, mid_mean, high_mid_mean, high_mean, \
                     spectral_centroid_mean, bpm_mean, bpm_variance, onset_mean, band_profile, \
                     frame_count \
@@ -134,7 +137,7 @@ impl Db {
         .fetch_optional(self.pool())
         .await?;
 
-Ok(row.map(|r| TrackAcousticProfile {
+        Ok(row.map(|r| TrackAcousticProfile {
             track_id: r.get("track_id"),
             rms_mean: r.get("rms_mean"),
             bass_mean: r.get("bass_mean"),
@@ -268,8 +271,9 @@ Ok(row.map(|r| TrackAcousticProfile {
                 let external: Option<String> = r.get("youtube_id");
                 TrackListeningStats {
                     track_id,
-                    key: external
-                        .unwrap_or_else(|| format!("{}|{}", title, artist.clone().unwrap_or_default())),
+                    key: external.unwrap_or_else(|| {
+                        format!("{}|{}", title, artist.clone().unwrap_or_default())
+                    }),
                     artist_name: artist,
                     play_count: r.get("play_count"),
                     last_played: r.get("last_played"),
@@ -343,7 +347,8 @@ Ok(row.map(|r| TrackAcousticProfile {
             .map(|r| {
                 let id: i64 = r.get("id");
                 let mut artist = Artist::new(
-                    r.get::<Option<String>, _>("artist_name").unwrap_or_default(),
+                    r.get::<Option<String>, _>("artist_name")
+                        .unwrap_or_default(),
                     None,
                     None,
                     None,
@@ -675,8 +680,8 @@ fn signal_to_playsignal(row: &sqlx::sqlite::SqliteRow) -> PlaySignal {
         let s: String = row.get("signal");
         let c: Option<String> = row.get("context");
         (
-            SignalKind::from_str(&s).unwrap_or(SignalKind::Play),
-            c.and_then(|x| PlayContext::from_str(&x))
+            SignalKind::parse(&s).unwrap_or(SignalKind::Play),
+            c.and_then(|x| PlayContext::parse(&x))
                 .unwrap_or(PlayContext::Manual),
         )
     };
@@ -691,8 +696,6 @@ fn signal_to_playsignal(row: &sqlx::sqlite::SqliteRow) -> PlaySignal {
         track_duration_ms: row.get("track_duration_ms"),
     }
 }
-
-
 
 async fn upsert_track_inner(
     tx: &mut Transaction<'_, Sqlite>,
@@ -958,6 +961,7 @@ mod tests {
     use std::collections::HashMap;
 
     use crate::domain::{artist::Artist, genre::Genre, source::Source, track::Track};
+    use crate::recommendation::types::UserProfile;
 
     use super::*;
 
@@ -1175,18 +1179,46 @@ mod tests {
         track.external_id = Some("vid-a".to_string());
         let id = db.upsert_track(&track, &HashMap::new()).await.unwrap();
 
-        db.record_signal(id, SignalKind::Play, PlayContext::Manual, Some(120_000), None, Some(200_000))
-            .await
-            .unwrap();
-        db.record_signal(id, SignalKind::Completed, PlayContext::Manual, Some(200_000), None, Some(200_000))
-            .await
-            .unwrap();
-        db.record_signal(id, SignalKind::Skip, PlayContext::Autoplay, Some(5_000), None, Some(200_000))
-            .await
-            .unwrap();
-        db.record_signal(id, SignalKind::Like, PlayContext::Manual, None, Some(42), Some(200_000))
-            .await
-            .unwrap();
+        db.record_signal(
+            id,
+            SignalKind::Play,
+            PlayContext::Manual,
+            Some(120_000),
+            None,
+            Some(200_000),
+        )
+        .await
+        .unwrap();
+        db.record_signal(
+            id,
+            SignalKind::Completed,
+            PlayContext::Manual,
+            Some(200_000),
+            None,
+            Some(200_000),
+        )
+        .await
+        .unwrap();
+        db.record_signal(
+            id,
+            SignalKind::Skip,
+            PlayContext::Autoplay,
+            Some(5_000),
+            None,
+            Some(200_000),
+        )
+        .await
+        .unwrap();
+        db.record_signal(
+            id,
+            SignalKind::Like,
+            PlayContext::Manual,
+            None,
+            Some(42),
+            Some(200_000),
+        )
+        .await
+        .unwrap();
 
         let all = db.all_signals(100).await.unwrap();
         assert_eq!(all.len(), 4, "cuatro señales distintas persistidas");
@@ -1199,8 +1231,80 @@ mod tests {
         let by_track = db.signals_for_track(id).await.unwrap();
         assert_eq!(by_track.len(), 4);
         assert!(
-            by_track.iter().any(|s| s.signal == SignalKind::Like && s.recomm_id == Some(42)),
+            by_track
+                .iter()
+                .any(|s| s.signal == SignalKind::Like && s.recomm_id == Some(42)),
             "la señal Like conserva su recomm_id"
+        );
+    }
+
+    #[tokio::test]
+    async fn reloaded_signals_rebuild_the_same_user_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::connect(dir.path().join("music.db").to_str().unwrap())
+            .await
+            .unwrap();
+
+        let mut metal = Track::new(
+            "Metal A".to_string(),
+            vec![Artist::new("X".to_string(), None, None, None)],
+            Source::YouTube,
+        );
+        metal.external_id = Some("vid-metal".to_string());
+        metal.genres = vec![Genre::new("metal".to_string())];
+        let metal_id = db.upsert_track(&metal, &HashMap::new()).await.unwrap();
+
+        let mut classical = Track::new(
+            "Clásica A".to_string(),
+            vec![Artist::new("Y".to_string(), None, None, None)],
+            Source::YouTube,
+        );
+        classical.external_id = Some("vid-classical".to_string());
+        classical.genres = vec![Genre::new("classical".to_string())];
+        let classical_id = db.upsert_track(&classical, &HashMap::new()).await.unwrap();
+
+        // Metal fuerte (5 completas manuales), clásica débil (1 play autoplay).
+        for _ in 0..5 {
+            db.record_signal(
+                metal_id,
+                SignalKind::Completed,
+                PlayContext::Manual,
+                Some(200_000),
+                None,
+                Some(200_000),
+            )
+            .await
+            .unwrap();
+        }
+        db.record_signal(
+            classical_id,
+            SignalKind::Play,
+            PlayContext::Autoplay,
+            Some(30_000),
+            None,
+            Some(200_000),
+        )
+        .await
+        .unwrap();
+
+        // Reconstrucción desde la BD, igual que hace el backend (`LoadRelated`).
+        let loaded = db.all_signals(100).await.unwrap();
+        assert_eq!(loaded.len(), 6, "las señales persistieron");
+        let tracks: HashMap<i64, Track> = db
+            .all_tracks()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|t| (t.id, t))
+            .collect();
+        let profiles = db.all_acoustic_profiles().await.unwrap();
+        let rebuilt = UserProfile::from_signals(&loaded, &tracks, &profiles);
+
+        assert_eq!(rebuilt.total_completions, 5);
+        assert_eq!(rebuilt.total_plays, 1);
+        assert!(
+            rebuilt.favorite_genres.first().map(String::as_str) == Some("metal"),
+            "el género dominante se reproduce tras recargar"
         );
     }
 
@@ -1267,7 +1371,10 @@ mod tests {
             Source::YouTube,
         );
         track.duration = Some(std::time::Duration::from_secs(180));
-        track.genres = vec![Genre::new("jazz".to_string()), Genre::new("ambient".to_string())];
+        track.genres = vec![
+            Genre::new("jazz".to_string()),
+            Genre::new("ambient".to_string()),
+        ];
         track.external_id = Some("vid-cat".to_string());
         let mut ids = HashMap::new();
         ids.insert(Source::YouTube, "vid-cat".to_string());

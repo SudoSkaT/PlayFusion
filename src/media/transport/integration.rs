@@ -27,14 +27,9 @@ fn test_policy(window_kib: u64) -> RangePolicy {
 }
 
 async fn open(server: &FakeServer, policy: RangePolicy) -> HttpRangeStream {
-    HttpRangeStream::open(
-        reqwest::Client::new(),
-        server.url(),
-        Vec::new(),
-        policy,
-    )
-    .await
-    .expect("apertura del stream")
+    HttpRangeStream::open(reqwest::Client::new(), server.url(), Vec::new(), policy)
+        .await
+        .expect("apertura del stream")
 }
 
 async fn drain(stream: &mut HttpRangeStream) -> Result<Vec<u8>, TransportFailure> {
@@ -59,7 +54,7 @@ async fn streams_across_many_windows_over_one_mib_without_premature_eof() {
     assert_eq!(got.len(), n);
     assert!(got == *data, "los bytes son idénticos al original");
     // Múltiples peticiones encadenadas: inicial + ~16 ventanas.
-    assert!(server.request_count() >= n as usize / (128 * 1024));
+    assert!(server.request_count() >= n / (128 * 1024));
 }
 
 /// El techo posicional se reporta como `Restricted` DESPUÉS de entregar el
@@ -86,7 +81,10 @@ async fn positional_restriction_serves_prefix_then_reports_restricted() {
                     "el prefijo entregado ({}) cubre hasta cerca del techo",
                     got.len()
                 );
-                assert_eq!(e.category(), crate::media::FailureCategory::StreamRestricted);
+                assert_eq!(
+                    e.category(),
+                    crate::media::FailureCategory::StreamRestricted
+                );
                 break;
             }
             Err(other) => panic!("fallo inesperado: {other}"),
@@ -98,9 +96,14 @@ async fn positional_restriction_serves_prefix_then_reports_restricted() {
 #[tokio::test]
 async fn always_forbidden_fails_open_as_url_rejected() {
     let server = FakeServer::start(Scenario::AlwaysForbidden).await;
-    let err = HttpRangeStream::open(reqwest::Client::new(), server.url(), Vec::new(), test_policy(64))
-        .await
-        .expect_err("debe fallar la apertura");
+    let err = HttpRangeStream::open(
+        reqwest::Client::new(),
+        server.url(),
+        Vec::new(),
+        test_policy(64),
+    )
+    .await
+    .expect_err("debe fallar la apertura");
     assert!(matches!(err, TransportFailure::UrlRejected(_)));
 }
 
@@ -140,9 +143,14 @@ async fn malformed_content_range_fails_fast_without_retries() {
     let data = payload(128 * 1024);
     let server = FakeServer::start(Scenario::BadContentRange(data)).await;
     let started = Instant::now();
-    let err = HttpRangeStream::open(reqwest::Client::new(), server.url(), Vec::new(), test_policy(64))
-        .await
-        .expect_err("206 sin CR válido debe fallar");
+    let err = HttpRangeStream::open(
+        reqwest::Client::new(),
+        server.url(),
+        Vec::new(),
+        test_policy(64),
+    )
+    .await
+    .expect_err("206 sin CR válido debe fallar");
     assert!(
         matches!(err, TransportFailure::InvalidResponse(_)),
         "clasificación: {err}"
@@ -156,8 +164,7 @@ async fn malformed_content_range_fails_fast_without_retries() {
 #[tokio::test]
 async fn slow_server_times_out_with_bounded_retries() {
     let data = payload(256 * 1024);
-    let server =
-        FakeServer::start(Scenario::Slow(Duration::from_millis(500), data.clone())).await;
+    let server = FakeServer::start(Scenario::Slow(Duration::from_millis(500), data.clone())).await;
     let policy = RangePolicy {
         initial_window: 32 * 1024,
         window_size: 128 * 1024,
@@ -169,7 +176,9 @@ async fn slow_server_times_out_with_bounded_retries() {
     let err = HttpRangeStream::open(reqwest::Client::new(), server.url(), Vec::new(), policy)
         .await
         .expect_err("timeout esperado");
-    if !matches!(err, TransportFailure::Timeout(_)) { panic!("clase inesperada: {err:#?}"); }
+    if !matches!(err, TransportFailure::Timeout(_)) {
+        panic!("clase inesperada: {err:#?}");
+    }
     // Acotado: apertura (120ms×2 intentos) + backoff, no minutos.
     assert!(started.elapsed() < Duration::from_secs(5));
 }

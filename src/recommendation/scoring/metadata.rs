@@ -1,7 +1,7 @@
 //! Similaridad de metadata: artista, género, álbum, tag, década.
 
-use std::collections::HashSet;
 use chrono::Datelike;
+use std::collections::HashSet;
 
 use crate::domain::track::Track;
 use crate::recommendation::types::UserProfile;
@@ -20,18 +20,22 @@ pub fn metadata_similarity(track: &Track, profile: &UserProfile) -> f64 {
     let tag_match = tag_match_score(track, profile);
     let decade_match = decade_match_score(track, profile);
 
-    (0.35 * artist_match
+    0.35 * artist_match
         + 0.25 * genre_match
         + 0.20 * album_match
         + 0.10 * tag_match
-        + 0.10 * decade_match) as f64
+        + 0.10 * decade_match
 }
 
 fn artist_match_score(track: &Track, profile: &UserProfile) -> f64 {
     if profile.favorite_artists.is_empty() {
         return 0.0;
     }
-    let profile_artists: HashSet<&str> = profile.favorite_artists.iter().map(|s| s.as_str()).collect();
+    let profile_artists: HashSet<&str> = profile
+        .favorite_artists
+        .iter()
+        .map(|s| s.as_str())
+        .collect();
     let match_count = track
         .artists
         .iter()
@@ -47,7 +51,8 @@ fn genre_match_score(track: &Track, profile: &UserProfile) -> f64 {
     if profile.favorite_genres.is_empty() {
         return 0.0;
     }
-    let profile_genres: HashSet<&str> = profile.favorite_genres.iter().map(|s| s.as_str()).collect();
+    let profile_genres: HashSet<&str> =
+        profile.favorite_genres.iter().map(|s| s.as_str()).collect();
     let match_count = track
         .genres
         .iter()

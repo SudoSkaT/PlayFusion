@@ -30,12 +30,19 @@ fn karaoke_normal_playback() {
     let now = Instant::now();
 
     // Track "song-a" arranca.
-    assert_eq!(clock.update(Some("song-a"), Duration::ZERO, now), Some(crate::playback::ClockEvent::NewTrack));
+    assert_eq!(
+        clock.update(Some("song-a"), Duration::ZERO, now),
+        Some(crate::playback::ClockEvent::NewTrack)
+    );
 
     // Position 0 → ninguna línea activa (la primera es a 5s).
     clock.update(Some("song-a"), Duration::from_secs(0), now);
     let pos = clock.snapshot(true, false, Some(Duration::from_secs(20)), now);
-    assert_eq!(position_after(&lyrics, pos), 0, "posición 0s → sin línea activa (unwrap a 0)");
+    assert_eq!(
+        position_after(&lyrics, pos),
+        0,
+        "posición 0s → sin línea activa (unwrap a 0)"
+    );
 
     // Position 5s → línea 0 activa.
     clock.update(Some("song-a"), Duration::from_secs(5), now);
@@ -67,14 +74,32 @@ fn karaoke_pause() {
     clock.update(Some("song-a"), Duration::from_secs(7), now);
 
     // Se pausa: snapshot congela la posición.
-    let paused = clock.snapshot(false, false, Some(Duration::from_secs(20)), now + Duration::from_secs(30));
+    let paused = clock.snapshot(
+        false,
+        false,
+        Some(Duration::from_secs(20)),
+        now + Duration::from_secs(30),
+    );
     assert_eq!(paused, Duration::from_secs(7), "pausa congela en 7s");
     assert_eq!(position_after(&lyrics, paused), 0, "al pausar → línea 0");
 
     // Tras 30s de pausa, sigue en la línea 0 (no avanza).
-    clock.update(Some("song-a"), Duration::from_secs(7), now + Duration::from_secs(30));
-    let still_paused = clock.snapshot(false, false, Some(Duration::from_secs(20)), now + Duration::from_secs(60));
-    assert_eq!(still_paused, Duration::from_secs(7), "pausa larga sigue en 7s");
+    clock.update(
+        Some("song-a"),
+        Duration::from_secs(7),
+        now + Duration::from_secs(30),
+    );
+    let still_paused = clock.snapshot(
+        false,
+        false,
+        Some(Duration::from_secs(20)),
+        now + Duration::from_secs(60),
+    );
+    assert_eq!(
+        still_paused,
+        Duration::from_secs(7),
+        "pausa larga sigue en 7s"
+    );
 }
 
 // ───────────────────────────────────────────────────────────────────
@@ -97,8 +122,15 @@ fn karaoke_resume() {
     // Se reanuda: snapshot extrapola.
     let later = now + Duration::from_secs(10);
     let resumed = clock.snapshot(true, false, Some(Duration::from_secs(20)), later);
-    assert!(resumed > Duration::from_secs(5), "al reanudar extrapola por delante de 5s");
-    assert_eq!(position_after(&lyrics, resumed), 2, "reanudando → línea 2 (15s)");
+    assert!(
+        resumed > Duration::from_secs(5),
+        "al reanudar extrapola por delante de 5s"
+    );
+    assert_eq!(
+        position_after(&lyrics, resumed),
+        2,
+        "reanudando → línea 2 (15s)"
+    );
 }
 
 // ───────────────────────────────────────────────────────────────────
@@ -113,7 +145,13 @@ fn karaoke_seek_forward() {
 
     clock.update(Some("song-a"), Duration::ZERO, now);
     clock.update(Some("song-a"), Duration::from_secs(15), now);
-    assert_eq!(position_after(&lyrics, clock.snapshot(true, false, Some(Duration::from_secs(20)), now)), 2);
+    assert_eq!(
+        position_after(
+            &lyrics,
+            clock.snapshot(true, false, Some(Duration::from_secs(20)), now)
+        ),
+        2
+    );
 
     // Seek forward a 5s.
     clock.begin_seek(Duration::from_secs(5));
@@ -121,7 +159,11 @@ fn karaoke_seek_forward() {
 
     // Seek confirmado: PositionClock re-ancla a 5s.
     assert_eq!(clock.pending_seek(), None, "seek confirmado");
-    assert_eq!(clock.position(), Duration::from_secs(5), "posición re-anclada a 5s");
+    assert_eq!(
+        clock.position(),
+        Duration::from_secs(5),
+        "posición re-anclada a 5s"
+    );
 
     let pos = clock.snapshot(true, false, Some(Duration::from_secs(20)), now);
     assert_eq!(position_after(&lyrics, pos), 0, "seek forward → línea 0");
@@ -139,7 +181,13 @@ fn karaoke_seek_backward() {
 
     clock.update(Some("song-a"), Duration::ZERO, now);
     clock.update(Some("song-a"), Duration::from_secs(15), now);
-    assert_eq!(position_after(&lyrics, clock.snapshot(true, false, Some(Duration::from_secs(20)), now)), 2);
+    assert_eq!(
+        position_after(
+            &lyrics,
+            clock.snapshot(true, false, Some(Duration::from_secs(20)), now)
+        ),
+        2
+    );
 
     // Seek backward a 3s.
     clock.begin_seek(Duration::from_secs(3));
@@ -166,13 +214,31 @@ fn karaoke_buffering() {
     clock.update(Some("song-a"), Duration::from_secs(7), now);
 
     // En buffering (stalled=true): snapshot congela la posición.
-    let stalled = clock.snapshot(true, true, Some(Duration::from_secs(20)), now + Duration::from_secs(15));
+    let stalled = clock.snapshot(
+        true,
+        true,
+        Some(Duration::from_secs(20)),
+        now + Duration::from_secs(15),
+    );
     assert_eq!(stalled, Duration::from_secs(7), "buffering congela en 7s");
-    assert_eq!(position_after(&lyrics, stalled), 0, "en buffering → línea 0 (no avanza)");
+    assert_eq!(
+        position_after(&lyrics, stalled),
+        0,
+        "en buffering → línea 0 (no avanza)"
+    );
 
     // Tras 30s de buffer, sigue en la misma línea.
-    let still_stalled = clock.snapshot(true, true, Some(Duration::from_secs(20)), now + Duration::from_secs(45));
-    assert_eq!(still_stalled, Duration::from_secs(7), "buffering largo sigue en 7s");
+    let still_stalled = clock.snapshot(
+        true,
+        true,
+        Some(Duration::from_secs(20)),
+        now + Duration::from_secs(45),
+    );
+    assert_eq!(
+        still_stalled,
+        Duration::from_secs(7),
+        "buffering largo sigue en 7s"
+    );
 }
 
 // ───────────────────────────────────────────────────────────────────
@@ -194,13 +260,21 @@ fn karaoke_track_change() {
 
     // Cambio a "song-b": ClockEvent::NewTrack.
     let event = clock.update(Some("song-b"), Duration::ZERO, now);
-    assert_eq!(event, Some(crate::playback::ClockEvent::NewTrack), "cambio de track → NewTrack");
+    assert_eq!(
+        event,
+        Some(crate::playback::ClockEvent::NewTrack),
+        "cambio de track → NewTrack"
+    );
     assert_eq!(clock.track_key(), Some("song-b"), "track_key actualizado");
     assert_eq!(clock.position(), Duration::ZERO, "posición reset a 0");
 
     // La canción "song-b" empieza: la posición es 0 → ninguna línea activa.
     let pos = clock.snapshot(true, false, Some(Duration::from_secs(9)), now);
-    assert_eq!(position_after(&lyrics_b, pos), 0, "nuevo track → sin línea activa aún");
+    assert_eq!(
+        position_after(&lyrics_b, pos),
+        0,
+        "nuevo track → sin línea activa aún"
+    );
 }
 
 // ───────────────────────────────────────────────────────────────────
@@ -227,8 +301,16 @@ fn karaoke_stale_lyric_response() {
     // La respuesta tardía de song-a no puede "ganar" la sesión actual:
     // track_key() sigue siendo song-b y las letras de song-a se ignoran en la
     // capa de UI (que compara contra `now_playing`).
-    assert_eq!(clock.track_key(), Some("song-b"), "sesión vigente no se pisa");
-    assert_ne!(clock.track_key(), Some("song-a"), "lyrics de song-a son stale");
+    assert_eq!(
+        clock.track_key(),
+        Some("song-b"),
+        "sesión vigente no se pisa"
+    );
+    assert_ne!(
+        clock.track_key(),
+        Some("song-a"),
+        "lyrics de song-a son stale"
+    );
 }
 
 // ───────────────────────────────────────────────────────────────────
@@ -248,8 +330,15 @@ fn karaoke_seek_backward_confirmed_by_backend_event() {
     // 15s: el karaoke sigue ese reloj real, no el objetivo.
     clock.begin_seek(Duration::from_secs(3));
     clock.update(Some("song-a"), Duration::from_secs(15), now);
-    assert_eq!(clock.pending_seek().map(|s| s.target), Some(Duration::from_secs(3)));
-    assert_eq!(clock.position(), Duration::from_secs(15), "audio real antes del salto");
+    assert_eq!(
+        clock.pending_seek().map(|s| s.target),
+        Some(Duration::from_secs(3))
+    );
+    assert_eq!(
+        clock.position(),
+        Duration::from_secs(15),
+        "audio real antes del salto"
+    );
 
     // El backend CONFIRMA el salto real: se re-ancla en el objetivo.
     clock.confirm_seek(now);
@@ -272,11 +361,18 @@ fn karaoke_seek_failed_keeps_following_real_audio() {
     clock.begin_seek(Duration::from_secs(5));
     clock.cancel_pending_seek();
     assert!(clock.pending_seek().is_none());
-    assert_eq!(clock.position(), Duration::from_secs(80), "el audio nunca se movió");
+    assert_eq!(
+        clock.position(),
+        Duration::from_secs(80),
+        "el audio nunca se movió"
+    );
     let pos = clock.snapshot(true, false, Some(Duration::from_secs(90)), now);
-    assert_eq!(position_after(&lyrics, pos), 3, "sigue la última línea (80s)");
+    assert_eq!(
+        position_after(&lyrics, pos),
+        3,
+        "sigue la última línea (80s)"
+    );
 }
-
 
 // ───────────────────────────────────────────────────────────────────
 // Reset de clock
@@ -317,7 +413,13 @@ fn karaoke_timestamp_discontinuity() {
 
     // Avanza normalmente hasta 15s.
     clock.update(Some("song-a"), Duration::from_secs(15), now);
-    assert_eq!(position_after(&lyrics, clock.snapshot(true, false, Some(Duration::from_secs(20)), now)), 2);
+    assert_eq!(
+        position_after(
+            &lyrics,
+            clock.snapshot(true, false, Some(Duration::from_secs(20)), now)
+        ),
+        2
+    );
 
     // Seek backward a 2s: timestamp discontinuo.
     clock.begin_seek(Duration::from_secs(2));
@@ -325,12 +427,20 @@ fn karaoke_timestamp_discontinuity() {
 
     // active_index salta de 2 → 0.
     let pos = clock.snapshot(true, false, Some(Duration::from_secs(20)), now);
-    assert_eq!(position_after(&lyrics, pos), 0, "seek backward → salto de línea 2 a 0");
+    assert_eq!(
+        position_after(&lyrics, pos),
+        0,
+        "seek backward → salto de línea 2 a 0"
+    );
 
     // Avanza hasta 7s.
     clock.update(Some("song-a"), Duration::from_secs(7), now);
     let pos = clock.snapshot(true, false, Some(Duration::from_secs(20)), now);
-    assert_eq!(position_after(&lyrics, pos), 0, "después de seek → reanuda normalmente");
+    assert_eq!(
+        position_after(&lyrics, pos),
+        0,
+        "después de seek → reanuda normalmente"
+    );
 
     // Seek forward a 18s.
     clock.begin_seek(Duration::from_secs(18));
@@ -354,7 +464,11 @@ fn karaoke_finished() {
 
     // Mientras suena: línea 0 activa (la primera línea a 5s).
     let pos = clock.snapshot(true, false, Some(Duration::from_secs(10)), now);
-    assert_eq!(position_after(&lyrics, pos), 0, "durante la canción → línea 0 activa");
+    assert_eq!(
+        position_after(&lyrics, pos),
+        0,
+        "durante la canción → línea 0 activa"
+    );
 
     // Avanza a 10s: línea 1 activa.
     clock.update(Some("song-a"), Duration::from_secs(10), now);
@@ -389,7 +503,11 @@ fn karaoke_outro_largo() {
 
     // En 30s, la última línea (dos, a 10s) sigue visible (outro).
     let pos = clock.snapshot(true, false, Some(Duration::from_secs(60)), now);
-    assert_eq!(position_after(&lyrics, pos), 1, "outro: última línea sigue activa");
+    assert_eq!(
+        position_after(&lyrics, pos),
+        1,
+        "outro: última línea sigue activa"
+    );
 
     // El karaoke NO se limpia hasta el fin real (finished=true).
 }
@@ -438,11 +556,19 @@ fn karaoke_seek_not_confirmed_follows_real_audio() {
 
     // El seek NO se confirmó (abs_diff(10, 3) > 1s).
     assert!(clock.pending_seek().is_some(), "seek pendiente");
-    assert_eq!(clock.position(), Duration::from_secs(10), "sigue el audio real");
+    assert_eq!(
+        clock.position(),
+        Duration::from_secs(10),
+        "sigue el audio real"
+    );
 
     // El karaoke sigue la línea real (10s → línea 1).
     let pos = clock.snapshot(true, false, Some(Duration::from_secs(20)), now);
-    assert_eq!(position_after(&lyrics, pos), 1, "seek pendiente → sigue el audio real");
+    assert_eq!(
+        position_after(&lyrics, pos),
+        1,
+        "seek pendiente → sigue el audio real"
+    );
 }
 
 // ───────────────────────────────────────────────────────────────────
@@ -478,7 +604,13 @@ fn karaoke_restart_same_track_resets_position() {
 
     clock.update(Some("song-a"), Duration::ZERO, now);
     clock.update(Some("song-a"), Duration::from_secs(12), now);
-    assert_eq!(position_after(&lyrics, clock.snapshot(true, false, Some(Duration::from_secs(20)), now)), 1);
+    assert_eq!(
+        position_after(
+            &lyrics,
+            clock.snapshot(true, false, Some(Duration::from_secs(20)), now)
+        ),
+        1
+    );
 
     // Replay del MISMO track (autoplay).
     clock.restart_same_track();

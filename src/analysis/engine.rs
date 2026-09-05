@@ -17,8 +17,8 @@ use std::time::{Duration, Instant};
 
 use super::bands::{band_ratios, BandEdges};
 use super::beat::BpmEstimator;
-use super::fft::SpectrumAnalyzer;
 use super::features::{AudioFeatures, FeatureBus, RawFeatures};
+use super::fft::SpectrumAnalyzer;
 use super::onset::{FluxAnalyzer, OnsetDetector};
 use super::ring::SpScRing;
 use super::smoother::{FeatureSmoother, SMOOTHED_CHANNELS};
@@ -34,7 +34,10 @@ pub struct AnalysisConfig {
 
 impl Default for AnalysisConfig {
     fn default() -> Self {
-        Self { fft_size: 2048, hop: 512 }
+        Self {
+            fft_size: 2048,
+            hop: 512,
+        }
     }
 }
 
@@ -255,9 +258,7 @@ fn run(
             let sm = smoother.step(&targets, hop_time);
 
             let features = AudioFeatures {
-                timestamp: Duration::from_secs_f64(
-                    hops_analyzed as f64 * hop_time as f64,
-                ),
+                timestamp: Duration::from_secs_f64(hops_analyzed as f64 * hop_time as f64),
                 rms: sm[7],
                 amplitude: sm[8],
                 bass: sm[0],
@@ -279,7 +280,8 @@ fn run(
 }
 
 fn hop_rate_of(meta: Option<StreamMeta>, config: &AnalysisConfig) -> f32 {
-    meta.map(|m| config.hop_rate_hz(m.sample_rate)).unwrap_or(86.13)
+    meta.map(|m| config.hop_rate_hz(m.sample_rate))
+        .unwrap_or(86.13)
 }
 
 fn analyze_frame(
@@ -331,7 +333,10 @@ mod tests {
         let bus = runtime.bus();
 
         let tap = runtime.tap();
-        tap.announce(StreamMeta { sample_rate: SR, channels: CH });
+        tap.announce(StreamMeta {
+            sample_rate: SR,
+            channels: CH,
+        });
 
         // ~1.2 s de audio estéreo entrelazado a trozos realistas.
         let total = (SR as usize * 6 / 5) * CH as usize;
@@ -373,7 +378,10 @@ mod tests {
         let started = Instant::now();
         {
             let rt = AnalysisRuntime::spawn(AnalysisConfig::default());
-            rt.tap().announce(StreamMeta { sample_rate: 44_100, channels: 2 });
+            rt.tap().announce(StreamMeta {
+                sample_rate: 44_100,
+                channels: 2,
+            });
         }
         assert!(
             started.elapsed() < Duration::from_secs(2),

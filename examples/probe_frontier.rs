@@ -47,16 +47,22 @@ impl P {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(
-            |_| "rustypipe=warn".into(),
-        ))
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "rustypipe=warn".into()),
+        )
         .with_target(false)
         .init();
 
     let provider = YouTubeAdapter::new();
-    let query = std::env::args().nth(1).unwrap_or_else(|| "queen bohemian rhapsody".into());
+    let query = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "queen bohemian rhapsody".into());
     let results = provider.search_tracks(&query, 1).await?;
-    let track: Track = results.first().cloned().ok_or_else(|| anyhow::anyhow!("sin resultados"))?;
+    let track: Track = results
+        .first()
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("sin resultados"))?;
     let url = provider
         .inner()
         .resolve_audio_url(&track)
@@ -90,8 +96,8 @@ async fn main() -> anyhow::Result<()> {
         256 * KIB,
         512 * KIB,
         768 * KIB,
-        1 * MIB - KIB,
-        1 * MIB,
+        MIB - KIB,
+        MIB,
         MIB + 64 * KIB,
         MIB + 128 * KIB,
         MIB + 256 * KIB,
@@ -120,7 +126,7 @@ async fn main() -> anyhow::Result<()> {
             consecutive_fails = 0;
         } else {
             consecutive_fails += 1;
-            if consecutive_fails <= 3 || consecutive_fails % 4 == 0 {
+            if consecutive_fails <= 3 || consecutive_fails.is_multiple_of(4) {
                 println!(
                     "fallo en frontera={frontier} ({:.3} MiB) status={st} (fallos seguidos={consecutive_fails})",
                     frontier as f64 / MIB as f64
@@ -144,7 +150,9 @@ async fn main() -> anyhow::Result<()> {
     println!("\n== F3: la URL sigue viva tras los fallos ==");
     let (st, n) = p.status(&url, 0, 64 * KIB - 1).await;
     println!("re-petición inicial -> {st} recibidos={n}");
-    let (st, n) = p.status(&url, frontier.saturating_sub(step), frontier - 1).await;
+    let (st, n) = p
+        .status(&url, frontier.saturating_sub(step), frontier - 1)
+        .await;
     println!("última ventana servida -> {st} recibidos={n}");
 
     Ok(())

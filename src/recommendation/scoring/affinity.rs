@@ -15,9 +15,9 @@ use std::collections::HashMap;
 
 use crate::domain::track::Track;
 use crate::infrastructure::storage::TrackListeningStats;
-use crate::recommendation::types::{AcousticProfile, TrackAcousticProfile};
-use crate::recommendation::scoring::recency::days_since;
 use crate::recommendation::recency_bonus;
+use crate::recommendation::scoring::recency::days_since;
+use crate::recommendation::types::{AcousticProfile, TrackAcousticProfile};
 
 /// Afinidad entre un track y el usuario.
 ///
@@ -36,7 +36,7 @@ pub fn user_affinity(
 ) -> f64 {
     let engagement = engagement_score(track, history);
     let acoustic = acoustic_affinity_score(track, track_profiles, user_acoustic);
-    (0.6 * engagement + 0.4 * acoustic) as f64
+    0.6 * engagement + 0.4 * acoustic
 }
 
 /// Interacción directa del usuario con el track: frecuencia × recencia.

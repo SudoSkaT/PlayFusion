@@ -9,6 +9,7 @@ pub mod dashboard;
 pub mod event;
 pub mod history;
 pub mod metadata;
+pub mod navigation;
 pub mod related;
 pub mod search;
 pub mod settings;

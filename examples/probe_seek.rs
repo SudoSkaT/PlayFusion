@@ -4,19 +4,20 @@
 //!
 //! Uso: cargo run --release --example probe_seek
 
-use playfusion::catalog::CatalogProvider;
-use playfusion::domain::stream::MediaSource;
 use playfusion::app::audio::{EventBus, PlaybackEvent};
 use playfusion::app::playback::PlaybackRouter;
+use playfusion::catalog::CatalogProvider;
+use playfusion::domain::stream::MediaSource;
 use playfusion::domain::track::Track;
 use std::time::{Duration, Instant};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(
-            |_| "rustypipe=warn".into(),
-        ))
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "rustypipe=warn".into()),
+        )
         .with_target(false)
         .init();
 
@@ -56,7 +57,9 @@ async fn main() -> anyhow::Result<()> {
     router.play(&track, Some(source)).await?;
 
     // Presupuesto: la duración declarada + margen de arranque/red.
-    let budget = track.duration.map_or(Duration::from_secs(240), |d| d + Duration::from_secs(60));
+    let budget = track
+        .duration
+        .map_or(Duration::from_secs(240), |d| d + Duration::from_secs(60));
     let started = Instant::now();
     let mut events = router.subscribe();
     let mut max_pos = 0.0f32;
@@ -74,7 +77,7 @@ async fn main() -> anyhow::Result<()> {
                 if started.elapsed() > budget {
                     anyhow::bail!("sin Finished en {:?}", budget);
                 }
-                if started.elapsed().as_secs() % 5 == 0 {
+                if started.elapsed().as_secs().is_multiple_of(5) {
                     let status = router.status().await;
                     max_pos = max_pos.max(status.position.as_secs_f32());
                     print!(

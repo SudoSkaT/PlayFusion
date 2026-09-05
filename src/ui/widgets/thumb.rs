@@ -66,7 +66,7 @@ fn centered_frame_rect(area: Rect, state: &ThumbnailState) -> Rect {
     let width = (content_w + 4).min(area.width as usize) as u16;
     // La imagen se pinta con medio-bloques; reservar una celda adicional si
     // hace falta contiene el píxel impar sin sesgar el centro geométrico.
-    let height = ((content_h + 1) / 2 + 4).min(area.height as usize) as u16;
+    let height = (content_h.div_ceil(2) + 4).min(area.height as usize) as u16;
     Rect {
         x: area.x + area.width.saturating_sub(width) / 2,
         y: area.y + area.height.saturating_sub(height) / 2,

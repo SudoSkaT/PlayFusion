@@ -24,7 +24,13 @@ struct P {
 
 impl P {
     /// Status + bytes recibidos para un rango cerrado.
-    async fn probe(&self, tag: &str, url: &str, start: u64, len: u64) -> (u16, u64, Option<String>) {
+    async fn probe(
+        &self,
+        tag: &str,
+        url: &str,
+        start: u64,
+        len: u64,
+    ) -> (u16, u64, Option<String>) {
         let mut req = self.http.get(url);
         for (k, v) in &self.headers {
             req = req.header(k, v);
@@ -58,15 +64,19 @@ impl P {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(
-            |_| "rustypipe=warn".into(),
-        ))
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "rustypipe=warn".into()),
+        )
         .with_target(false)
         .init();
 
     let provider = YouTubeAdapter::new();
     let results = provider.search_tracks("Queen Bohemian Rhapsody", 1).await?;
-    let track: Track = results.first().cloned().ok_or_else(|| anyhow::anyhow!("sin resultados"))?;
+    let track: Track = results
+        .first()
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("sin resultados"))?;
 
     let url = provider
         .inner()
@@ -85,7 +95,10 @@ async fn main() -> anyhow::Result<()> {
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(60))
         .build()?;
-    let p = P { http, headers: context_headers() };
+    let p = P {
+        http,
+        headers: context_headers(),
+    };
 
     println!("\n== 1) barrido del offset inicial (ventanas de 64KiB dentro del archivo) ==");
     for start in [
@@ -116,11 +129,16 @@ async fn main() -> anyhow::Result<()> {
 
     println!("\n== 4) mismo rango post-frontera repetido x3 (¿transitorio?) ==");
     for i in 1..=3 {
-        let _ = p.probe(&format!("rep{i}"), &url, 1024 * KIB, 64 * KIB).await;
+        let _ = p
+            .probe(&format!("rep{i}"), &url, 1024 * KIB, 64 * KIB)
+            .await;
     }
 
     println!("\n== 5) sin cabeceras de contexto (reqwest pelado) ==");
-    let bare = P { http: p.http.clone(), headers: Vec::new() };
+    let bare = P {
+        http: p.http.clone(),
+        headers: Vec::new(),
+    };
     let _ = bare.probe("sinctx-pre", &url, 0, 64 * KIB).await;
     let _ = bare.probe("sinctx-post", &url, 1024 * KIB, 64 * KIB).await;
 
@@ -133,7 +151,9 @@ async fn main() -> anyhow::Result<()> {
         )],
     };
     let _ = chrome.probe("chrome-pre", &url, 0, 64 * KIB).await;
-    let _ = chrome.probe("chrome-post", &url, 1024 * KIB, 64 * KIB).await;
+    let _ = chrome
+        .probe("chrome-post", &url, 1024 * KIB, 64 * KIB)
+        .await;
 
     println!("\n== 7) NUEVA resolución (otra instancia = URL nueva) ==");
     let provider2 = YouTubeAdapter::new();
@@ -142,13 +162,15 @@ async fn main() -> anyhow::Result<()> {
         .resolve_audio_url(&track)
         .await?
         .ok_or_else(|| anyhow::anyhow!("sin stream #2"))?;
-    println!(
-        "url nueva distinta: {}",
-        url != url2
-    );
-    let p2 = P { http: p.http.clone(), headers: context_headers() };
+    println!("url nueva distinta: {}", url != url2);
+    let p2 = P {
+        http: p.http.clone(),
+        headers: context_headers(),
+    };
     let _ = p2.probe("nueva-url-pre", &url2, 0, 64 * KIB).await;
-    let _ = p2.probe("nueva-url-post", &url2, 1024 * KIB, 64 * KIB).await;
+    let _ = p2
+        .probe("nueva-url-post", &url2, 1024 * KIB, 64 * KIB)
+        .await;
     let _ = p2.probe("nueva-url-mas", &url2, 2048 * KIB, 64 * KIB).await;
 
     Ok(())

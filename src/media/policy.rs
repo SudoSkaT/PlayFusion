@@ -112,7 +112,10 @@ mod tests {
         let p = FailurePolicy::default();
         // Unsupported/InvalidResponse son deterministas: ni un reintento.
         assert_eq!(p.decide(&err(C::Unsupported), 0), PolicyAction::Fallback);
-        assert_eq!(p.decide(&err(C::InvalidResponse), 0), PolicyAction::Fallback);
+        assert_eq!(
+            p.decide(&err(C::InvalidResponse), 0),
+            PolicyAction::Fallback
+        );
         assert_eq!(
             p.decide(&err(C::ProviderUnavailable), 0),
             PolicyAction::Fallback
@@ -125,8 +128,14 @@ mod tests {
             retries_per_provider: 2,
             ..FailurePolicy::default()
         };
-        assert!(matches!(p.decide(&err(C::Timeout), 0), PolicyAction::Retry { .. }));
-        assert!(matches!(p.decide(&err(C::Timeout), 1), PolicyAction::Retry { .. }));
+        assert!(matches!(
+            p.decide(&err(C::Timeout), 0),
+            PolicyAction::Retry { .. }
+        ));
+        assert!(matches!(
+            p.decide(&err(C::Timeout), 1),
+            PolicyAction::Retry { .. }
+        ));
         // Tercer fallo: agotado este proveedor.
         assert_eq!(p.decide(&err(C::Timeout), 2), PolicyAction::Fallback);
         // Y con 0 retries jamás repite.
@@ -134,7 +143,10 @@ mod tests {
             retries_per_provider: 0,
             ..FailurePolicy::default()
         };
-        assert_eq!(p0.decide(&err(C::NetworkFailure), 0), PolicyAction::Fallback);
+        assert_eq!(
+            p0.decide(&err(C::NetworkFailure), 0),
+            PolicyAction::Fallback
+        );
     }
 
     #[test]

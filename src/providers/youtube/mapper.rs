@@ -12,8 +12,7 @@ use crate::domain::{album::Album, artist::Artist, track::Track};
 
 /// Cadena de fallback de miniaturas `i.ytimg.com`, en orden descendente de
 /// resolución. Se prueban hasta encontrar una que exista y se decodifique.
-pub(crate) const THUMB_FALLBACK: [&str; 4] =
-    ["maxresdefault", "hqdefault", "mqdefault", "default"];
+pub(crate) const THUMB_FALLBACK: [&str; 4] = ["maxresdefault", "hqdefault", "mqdefault", "default"];
 
 /// Firma un `Track` de dominio a partir de un item de YouTube Music.
 pub(crate) fn map_track(item: &TrackItem) -> Track {
@@ -102,5 +101,4 @@ mod tests {
             Some("cover.jpg")
         );
     }
-
 }

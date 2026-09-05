@@ -7,8 +7,8 @@ use std::time::Duration;
 use tokio::sync::broadcast::{self, Receiver, Sender};
 use tokio::sync::Mutex;
 
-use crate::domain::stream::MediaSource;
 use crate::domain::source::Source;
+use crate::domain::stream::MediaSource;
 use crate::domain::track::Track;
 
 use super::audio::{PlaybackEngine, PlaybackError, PlaybackEvent, PlaybackPolicy, PlaybackStatus};

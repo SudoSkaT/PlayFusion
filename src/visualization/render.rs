@@ -58,7 +58,15 @@ pub fn render(
     position_secs: f32,
     palette: Option<[[u8; 3]; 3]>,
 ) {
-    let pulse_dot = if state.pulse > 0.55 { "●" } else { if state.pulse > 0.2 { "◉" } else { "○" } };
+    let pulse_dot = if state.pulse > 0.55 {
+        "●"
+    } else {
+        if state.pulse > 0.2 {
+            "◉"
+        } else {
+            "○"
+        }
+    };
     let title_color = if state.active {
         bar_color(state.intensity.max(0.15), palette)
     } else {

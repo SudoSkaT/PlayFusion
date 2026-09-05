@@ -89,11 +89,7 @@ impl StreamRegistry {
     }
 
     /// [`Self::register`] con configuración de breaker propia.
-    pub fn register_with_circuit(
-        &self,
-        provider: Arc<dyn StreamProvider>,
-        circuit: CircuitConfig,
-    ) {
+    pub fn register_with_circuit(&self, provider: Arc<dyn StreamProvider>, circuit: CircuitConfig) {
         let id = provider.id();
         let mut g = self.entries.write().unwrap();
         let breaker = g
@@ -134,7 +130,11 @@ impl StreamRegistry {
     /// Itera en ORDEN DE REGISTRO (no en el orden aleatorio del mapa) para que
     /// el plan sea determinista; `now` entra como parámetro para que la
     /// evaluación de breakers sea reproducible en tests.
-    pub fn snapshot(&self, track: &crate::domain::track::Track, now: Instant) -> Vec<ProviderSnapshot> {
+    pub fn snapshot(
+        &self,
+        track: &crate::domain::track::Track,
+        now: Instant,
+    ) -> Vec<ProviderSnapshot> {
         let g = self.entries.read().unwrap();
         let order = self.registration_order.read().unwrap();
         let mut snaps: Vec<ProviderSnapshot> = order
@@ -291,14 +291,19 @@ mod tests {
 
         let now = Instant::now();
         assert!(
-            !reg.snapshot(&yt_track(), now).iter().any(|s| s.id == "flaky"),
+            !reg.snapshot(&yt_track(), now)
+                .iter()
+                .any(|s| s.id == "flaky"),
             "circuito abierto: fuera del plan"
         );
 
         // Tras el cooldown vuelve (half-open) — el snapshot ya lo lista; la
         // sonda la concede `allow_attempt`.
         let later = now + Duration::from_secs(31);
-        assert!(reg.snapshot(&yt_track(), later).iter().any(|s| s.id == "flaky"));
+        assert!(reg
+            .snapshot(&yt_track(), later)
+            .iter()
+            .any(|s| s.id == "flaky"));
         assert!(reg.allow_attempt("flaky", later), "concede UNA sonda");
         assert!(!reg.allow_attempt("flaky", later), "no concede dos sondas");
     }
@@ -316,7 +321,10 @@ mod tests {
         reg.record_success("a");
         let snaps = reg.snapshot(&yt_track(), Instant::now());
         assert_eq!(snaps[0].recent_failures, 0);
-        assert_eq!(snaps[0].breaker.state(Instant::now()), CircuitState::Healthy);
+        assert_eq!(
+            snaps[0].breaker.state(Instant::now()),
+            CircuitState::Healthy
+        );
     }
 
     #[test]

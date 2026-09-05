@@ -20,11 +20,11 @@
 //! combina con la posición real de reproducción (spec §17).
 //! ```
 
-pub mod beat;
 pub mod bands;
+pub mod beat;
 pub mod engine;
-pub mod fft;
 pub mod features;
+pub mod fft;
 pub mod onset;
 pub mod ring;
 pub mod rms;
@@ -34,7 +34,7 @@ pub mod tap;
 pub mod test_support;
 
 pub use engine::{AnalysisConfig, AnalysisRuntime, PcmTap, StreamMeta};
-pub use tap::TapSource;
 pub use features::{AudioFeatures, FeatureBus};
 pub use ring::SpScRing;
 pub use smoother::FeatureSmoother;
+pub use tap::TapSource;

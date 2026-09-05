@@ -12,8 +12,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
-use crate::domain::{source::Source, stream::StreamResolution};
 use crate::domain::track::Track;
+use crate::domain::{source::Source, stream::StreamResolution};
 use crate::media::failure::{FailureCategory, ResolutionError};
 use crate::media::provider::{ResolveContext, StreamProvider};
 
@@ -121,11 +121,7 @@ impl StreamProvider for FakeStreamProvider {
                 g.pop_front().unwrap()
             } else {
                 g.front().cloned().ok_or_else(|| {
-                    ResolutionError::new(
-                        FailureCategory::Unknown,
-                        self.source,
-                        "sin guion",
-                    )
+                    ResolutionError::new(FailureCategory::Unknown, self.source, "sin guion")
                 })?
             }
         };

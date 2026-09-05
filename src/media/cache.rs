@@ -226,8 +226,7 @@ impl ResolutionCache for TwoTierCache {
 
     async fn expiring_within(&self, window: Duration) -> Vec<(String, DateTime<Utc>)> {
         let mut all = self.hot.expiring_within(window).await;
-        let seen: std::collections::HashSet<String> =
-            all.iter().map(|(k, _)| k.clone()).collect();
+        let seen: std::collections::HashSet<String> = all.iter().map(|(k, _)| k.clone()).collect();
         for (k, exp) in self.cold.expiring_within(window).await {
             if !seen.contains(&k) {
                 all.push((k, exp));
@@ -260,29 +259,31 @@ mod tests {
         let cache = MemoryResolutionCache::default();
 
         // Sin expiración: vive.
-        cache
-            .put("a", resolution("https://cdn/a", None))
-            .await;
+        cache.put("a", resolution("https://cdn/a", None)).await;
         assert!(cache.get("a").await.is_some());
 
         // Caducada: invisible y purgada.
-        cache.put("b", resolution("https://cdn/b", Some(t(10)))).await;
+        cache
+            .put("b", resolution("https://cdn/b", Some(t(10))))
+            .await;
         assert!(
-            cache.get("b").await.is_none_or(|r| r.uri != "https://cdn/b"),
+            cache
+                .get("b")
+                .await
+                .is_none_or(|r| r.uri != "https://cdn/b"),
             "una entrada caducada no se sirve"
         );
-        assert!(cache.get("b").await.is_none(), "la entrada caducada se purga");
+        assert!(
+            cache.get("b").await.is_none(),
+            "la entrada caducada se purga"
+        );
     }
 
     #[tokio::test]
     async fn memory_invalidate_is_key_scoped() {
         let cache = MemoryResolutionCache::default();
-        cache
-            .put("yt1", resolution("https://cdn/yt1", None))
-            .await;
-        cache
-            .put("yt2", resolution("https://cdn/yt2", None))
-            .await;
+        cache.put("yt1", resolution("https://cdn/yt1", None)).await;
+        cache.put("yt2", resolution("https://cdn/yt2", None)).await;
 
         cache.invalidate("yt1").await;
         assert!(cache.get("yt1").await.is_none());
@@ -312,7 +313,9 @@ mod tests {
         let far = now + chrono::Duration::hours(5);
 
         let cache = MemoryResolutionCache::default();
-        cache.put("soon", resolution("https://c/s", Some(soon))).await;
+        cache
+            .put("soon", resolution("https://c/s", Some(soon)))
+            .await;
         cache.put("far", resolution("https://c/f", Some(far))).await;
         cache.put("never", resolution("https://c/n", None)).await;
 
@@ -356,10 +359,18 @@ mod tests {
         let tiered = TwoTierCache::new(hot.clone(), cold.clone());
 
         assert!(tiered.get("miss").await.is_none());
-        assert_eq!(cold.gets.load(Ordering::Relaxed), 1, "el miss consulta la capa fría");
+        assert_eq!(
+            cold.gets.load(Ordering::Relaxed),
+            1,
+            "el miss consulta la capa fría"
+        );
 
         tiered.put("k", resolution("https://cdn/k", None)).await;
-        assert_eq!(cold.puts.load(Ordering::Relaxed), 1, "put llega a ambas capas");
+        assert_eq!(
+            cold.puts.load(Ordering::Relaxed),
+            1,
+            "put llega a ambas capas"
+        );
 
         assert!(tiered.get("k").await.is_some());
         assert_eq!(

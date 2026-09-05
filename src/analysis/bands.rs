@@ -13,7 +13,9 @@ pub struct BandEdges {
 impl Default for BandEdges {
     fn default() -> Self {
         // División habitual para features musicales.
-        Self { edges: [20.0, 250.0, 500.0, 2000.0, 4000.0, 16_000.0] }
+        Self {
+            edges: [20.0, 250.0, 500.0, 2000.0, 4000.0, 16_000.0],
+        }
     }
 }
 
@@ -38,11 +40,7 @@ impl BandRatios {
 ///
 /// `sample_rate` es la tasa de la SEÑAL analizada (post-decodificador) y
 /// `fft_size` el tamaño de ventana usado para producir `magnitudes`.
-pub fn band_ratios(
-    magnitudes: &[f32],
-    sample_rate: f32,
-    edges: &BandEdges,
-) -> BandRatios {
+pub fn band_ratios(magnitudes: &[f32], sample_rate: f32, edges: &BandEdges) -> BandRatios {
     let nyquist = sample_rate / 2.0;
     let bin_hz = nyquist / magnitudes.len() as f32;
 
@@ -119,7 +117,10 @@ mod tests {
         // La potencia escala con amp²: 5000 Hz domina 9:1.
         assert!(r.high > r.bass * 4.0, "high={} bass={}", r.high, r.bass);
         let sum: f32 = r.as_array().iter().sum();
-        assert!((sum - 1.0).abs() < 1e-4, "los dos picos están dentro de las bandas");
+        assert!(
+            (sum - 1.0).abs() < 1e-4,
+            "los dos picos están dentro de las bandas"
+        );
     }
 
     #[test]

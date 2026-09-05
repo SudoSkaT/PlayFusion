@@ -19,7 +19,7 @@ pub mod recovery;
 #[cfg(test)]
 pub mod karaoke_tests;
 
-pub use position_clock::{ClockEvent, PositionClock};
-pub use preload::{PreloadConfig, PreloadManager, should_preload};
+pub use position_clock::{clamp_seek_target, ClockEvent, PositionClock};
+pub use preload::{should_preload, PreloadConfig, PreloadManager};
 pub use queue::{QueueManager, RepeatMode};
-pub use recovery::{RecoveryBudget, RecoveryAction, decide_recovery};
+pub use recovery::{decide_recovery, RecoveryAction, RecoveryBudget};

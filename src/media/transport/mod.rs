@@ -155,7 +155,12 @@ pub fn parse_content_range(value: &str) -> Option<(u64, u64, Option<u64>)> {
 
 /// Host de una URL (para logs; jamás la URL completa).
 fn host_of(url: &str) -> &str {
-    url.split("://").nth(1).unwrap_or("?").split('/').next().unwrap_or("?")
+    url.split("://")
+        .nth(1)
+        .unwrap_or("?")
+        .split('/')
+        .next()
+        .unwrap_or("?")
 }
 
 /// Métricas acumuladas de un stream (observabilidad §27).
@@ -447,7 +452,8 @@ impl HttpRangeStream {
             }
             404 => Err(TransportFailure::NotFound(format!("HTTP 404 byte {start}"))),
             416 => Err(TransportFailure::InvalidResponse(format!(
-                "416 en byte {start} (total={})", self.total
+                "416 en byte {start} (total={})",
+                self.total
             ))),
             500..=599 => Err(TransportFailure::Network(format!(
                 "HTTP {status} en byte {start}"
@@ -476,7 +482,14 @@ mod tests {
 
     #[test]
     fn content_range_malformed_is_none() {
-        for bad in ["", "bytes", "bytes /", "bytes 5/10", "bytes 9-5/10", "bytes 5-9/x"] {
+        for bad in [
+            "",
+            "bytes",
+            "bytes /",
+            "bytes 5/10",
+            "bytes 9-5/10",
+            "bytes 5-9/x",
+        ] {
             assert_eq!(parse_content_range(bad), None, "{bad}");
         }
     }
@@ -514,7 +527,13 @@ mod tests {
 
     #[test]
     fn failures_classify_into_structural_categories() {
-        let f = |t: &str| TransportFailure::Restricted { limit: Some(1), msg: t.to_string() }.category();
+        let f = |t: &str| {
+            TransportFailure::Restricted {
+                limit: Some(1),
+                msg: t.to_string(),
+            }
+            .category()
+        };
         assert_eq!(f(""), FailureCategory::StreamRestricted);
         assert_eq!(
             TransportFailure::UrlRejected("403".into()).category(),
@@ -542,7 +561,11 @@ mod tests {
     fn only_transient_failures_retry() {
         assert!(TransportFailure::Timeout("t".into()).is_transient());
         assert!(TransportFailure::Network("n".into()).is_transient());
-        assert!(!TransportFailure::Restricted { limit: None, msg: "r".into() }.is_transient());
+        assert!(!TransportFailure::Restricted {
+            limit: None,
+            msg: "r".into()
+        }
+        .is_transient());
         assert!(!TransportFailure::UrlRejected("u".into()).is_transient());
         assert!(!TransportFailure::InvalidResponse("i".into()).is_transient());
         assert!(!TransportFailure::NotFound("f".into()).is_transient());

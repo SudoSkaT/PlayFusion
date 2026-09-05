@@ -4,10 +4,14 @@ use std::collections::HashMap;
 
 use crate::domain::track::Track;
 use crate::infrastructure::storage::TrackListeningStats;
-use crate::recommendation::{metadata_similarity, user_affinity, popularity_factor, negative_penalty, recency_bonus};
 use crate::recommendation::scoring::acoustic::acoustic_similarity_to_profile;
 use crate::recommendation::scoring::recency::days_since;
-use crate::recommendation::types::{RecommendationScore, TrackAcousticProfile, TrackSignals, UserProfile};
+use crate::recommendation::types::{
+    RecommendationScore, TrackAcousticProfile, TrackSignals, UserProfile,
+};
+use crate::recommendation::{
+    metadata_similarity, negative_penalty, popularity_factor, recency_bonus, user_affinity,
+};
 
 /// Pesos del pipeline (suman 1.0).
 ///
@@ -71,11 +75,7 @@ pub async fn rank(
     acoustic_profiles: &HashMap<i64, TrackAcousticProfile>,
     signals: &HashMap<i64, TrackSignals>,
 ) -> Vec<RecommendationScore> {
-    let max_play_count = history
-        .iter()
-        .map(|h| h.play_count)
-        .max()
-        .unwrap_or(1) as i64;
+    let max_play_count = history.iter().map(|h| h.play_count).max().unwrap_or(1);
 
     let mut scores: Vec<RecommendationScore> = Vec::new();
 
@@ -120,7 +120,11 @@ pub async fn rank(
         });
     }
 
-    scores.sort_by(|a, b| b.final_score.partial_cmp(&a.final_score).unwrap_or(std::cmp::Ordering::Equal));
+    scores.sort_by(|a, b| {
+        b.final_score
+            .partial_cmp(&a.final_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     scores
 }
 
@@ -141,7 +145,9 @@ pub fn track_to_feature_vector(
     track_id: i64,
     profiles: &HashMap<i64, TrackAcousticProfile>,
 ) -> Option<crate::recommendation::types::FeatureVector> {
-    profiles.get(&track_id).map(|p| crate::recommendation::types::FeatureVector::from_profile(p))
+    profiles
+        .get(&track_id)
+        .map(crate::recommendation::types::FeatureVector::from_profile)
 }
 
 #[cfg(test)]
@@ -152,6 +158,9 @@ mod tests {
     fn weights_sum_to_one() {
         let w = WEIGHTS;
         let total = w.meta + w.acoustic + w.affinity + w.recency + w.popularity;
-        assert!((total - 1.0).abs() < 1e-10, "pesos deben sumar 1.0: {total}");
+        assert!(
+            (total - 1.0).abs() < 1e-10,
+            "pesos deben sumar 1.0: {total}"
+        );
     }
 }

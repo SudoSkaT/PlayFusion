@@ -28,10 +28,7 @@ pub fn negative_penalty(skip_signals: i64, play_signals: i64) -> f64 {
 }
 
 /// Conteo de señales negativas significativas y de intentos (plays + rec_clicks).
-pub fn count_negative_ratio(
-    negative_signals: i64,
-    play_signals: i64,
-) -> f64 {
+pub fn count_negative_ratio(negative_signals: i64, play_signals: i64) -> f64 {
     negative_penalty(negative_signals, play_signals)
 }
 
@@ -58,9 +55,6 @@ mod tests {
 
     #[test]
     fn ratio_matches_direct() {
-        assert_eq!(
-            count_negative_ratio(3, 6),
-            negative_penalty(3, 6)
-        );
+        assert_eq!(count_negative_ratio(3, 6), negative_penalty(3, 6));
     }
 }

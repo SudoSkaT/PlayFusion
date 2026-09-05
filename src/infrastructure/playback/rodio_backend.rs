@@ -38,14 +38,14 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use rodio::{source::Source as RodioSource, Decoder, Player};
 
-use crate::domain::stream::MediaSource;
+use crate::analysis::{AnalysisRuntime, TapSource};
 use crate::app::audio::{
     EventBus, PlaybackEngine, PlaybackError, PlaybackEvent, PlaybackState, PlaybackStatus,
 };
 use crate::domain::source::Source;
+use crate::domain::stream::MediaSource;
 use crate::domain::track::Track;
 use crate::infrastructure::playback::is_http_source;
-use crate::analysis::{AnalysisRuntime, TapSource};
 use crate::infrastructure::playback::output::SharedOutput;
 use crate::media::transport::{HttpRangeStream, RangePolicy, TransportFailure};
 
@@ -682,7 +682,10 @@ impl PlaybackEngine for RodioBackend {
             let inner = self.inner.lock().unwrap();
             (
                 inner.state == PlaybackState::Paused,
-                matches!(inner.state, PlaybackState::Playing | PlaybackState::Buffering | PlaybackState::Seeking),
+                matches!(
+                    inner.state,
+                    PlaybackState::Playing | PlaybackState::Buffering | PlaybackState::Seeking
+                ),
                 inner.buffer.is_some(),
             )
         };
@@ -719,17 +722,19 @@ impl PlaybackEngine for RodioBackend {
         // en la NUEVA posición; reproduciendo sigue reproduciendo). Esto solo
         // es válido si el seek real ocurrió; si falló, no hay nada que pausar
         // en una posición distinta.
-        if seek_result.is_ok() {
-            if paused {
-                self.player.pause();
-            }
+        if seek_result.is_ok() && paused {
+            self.player.pause();
         }
 
         let mut inner = self.inner.lock().unwrap();
         match seek_result {
             Ok(()) => {
                 // Confirmado por el backend: el audio real está en `pos`.
-                inner.state = if paused { PlaybackState::Paused } else { PlaybackState::Playing };
+                inner.state = if paused {
+                    PlaybackState::Paused
+                } else {
+                    PlaybackState::Playing
+                };
                 self.bus.emit(PlaybackEvent::SeekCompleted);
                 Ok(Self::status_locked(&self.player, &inner))
             }

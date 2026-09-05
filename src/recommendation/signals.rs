@@ -49,7 +49,7 @@ impl SignalKind {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         Some(match s {
             "play" => SignalKind::Play,
             "completed" => SignalKind::Completed,
@@ -90,7 +90,7 @@ impl PlayContext {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         Some(match s {
             "manual" => PlayContext::Manual,
             "queue" => PlayContext::Queue,
@@ -171,7 +171,9 @@ pub fn is_meaningful_negative(signal: SignalKind, context: PlayContext) -> bool 
 /// Agrega señales por track en `plays` / `negative` para la penalización
 /// negativa del ranking (FASE 9/11). Los intentos son plays + rec_clicks; las
 /// negativas son solo skips/unlikes contextualmente significativos.
-pub fn aggregate_signals(signals: &[PlaySignal]) -> std::collections::HashMap<i64, crate::recommendation::types::TrackSignals> {
+pub fn aggregate_signals(
+    signals: &[PlaySignal],
+) -> std::collections::HashMap<i64, crate::recommendation::types::TrackSignals> {
     let mut map: std::collections::HashMap<i64, crate::recommendation::types::TrackSignals> =
         std::collections::HashMap::new();
     for s in signals {
@@ -225,15 +227,26 @@ mod tests {
 
     #[test]
     fn like_weights_more_than_plain_play() {
-        assert!(signal_weight(SignalKind::Like, PlayContext::Manual, true)
-            > signal_weight(SignalKind::Play, PlayContext::Manual, false));
+        assert!(
+            signal_weight(SignalKind::Like, PlayContext::Manual, true)
+                > signal_weight(SignalKind::Play, PlayContext::Manual, false)
+        );
     }
 
     #[test]
     fn skip_in_autoplay_is_not_meaningful_negative() {
-        assert!(!is_meaningful_negative(SignalKind::Skip, PlayContext::Autoplay));
-        assert!(is_meaningful_negative(SignalKind::Skip, PlayContext::Manual));
-        assert!(is_meaningful_negative(SignalKind::Unlike, PlayContext::Manual));
+        assert!(!is_meaningful_negative(
+            SignalKind::Skip,
+            PlayContext::Autoplay
+        ));
+        assert!(is_meaningful_negative(
+            SignalKind::Skip,
+            PlayContext::Manual
+        ));
+        assert!(is_meaningful_negative(
+            SignalKind::Unlike,
+            PlayContext::Manual
+        ));
     }
 
     #[test]
@@ -249,7 +262,7 @@ mod tests {
             SignalKind::RecClick,
             SignalKind::RecImpression,
         ] {
-            assert_eq!(SignalKind::from_str(s.as_str()), Some(s));
+            assert_eq!(SignalKind::parse(s.as_str()), Some(s));
         }
         for c in [
             PlayContext::Manual,
@@ -257,7 +270,7 @@ mod tests {
             PlayContext::Autoplay,
             PlayContext::Recommendation,
         ] {
-            assert_eq!(PlayContext::from_str(c.as_str()), Some(c));
+            assert_eq!(PlayContext::parse(c.as_str()), Some(c));
         }
     }
 
@@ -287,8 +300,26 @@ mod tests {
             mks(3, SignalKind::Completed, PlayContext::Manual), // no intento
         ];
         let map = aggregate_signals(&sigs);
-        assert_eq!(map[&1], TrackSignals { plays: 2, negative: 1 });
-        assert_eq!(map[&2], TrackSignals { plays: 1, negative: 1 });
-        assert_eq!(map[&3], TrackSignals { plays: 0, negative: 0 });
+        assert_eq!(
+            map[&1],
+            TrackSignals {
+                plays: 2,
+                negative: 1
+            }
+        );
+        assert_eq!(
+            map[&2],
+            TrackSignals {
+                plays: 1,
+                negative: 1
+            }
+        );
+        assert_eq!(
+            map[&3],
+            TrackSignals {
+                plays: 0,
+                negative: 0
+            }
+        );
     }
 }

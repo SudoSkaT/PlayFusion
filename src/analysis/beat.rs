@@ -46,7 +46,10 @@ impl BpmEstimator {
             max_bpm: 200.0,
             recalc_every: 8,
             since_recalc: 0,
-            last: TempoEstimate { bpm: 0.0, confidence: 0.0 },
+            last: TempoEstimate {
+                bpm: 0.0,
+                confidence: 0.0,
+            },
         }
     }
 
@@ -79,11 +82,17 @@ impl BpmEstimator {
         // Mínimo ~1.5 s de historia y señal real: sin esto, cualquier ruido
         // produciría tempos fantasiosos.
         if n < (self.hop_rate * 1.5) as usize {
-            return TempoEstimate { bpm: 0.0, confidence: 0.0 };
+            return TempoEstimate {
+                bpm: 0.0,
+                confidence: 0.0,
+            };
         }
         let energy: f32 = self.envelope.iter().map(|v| v * v).sum();
         if energy < 1e-4 {
-            return TempoEstimate { bpm: 0.0, confidence: 0.0 };
+            return TempoEstimate {
+                bpm: 0.0,
+                confidence: 0.0,
+            };
         }
 
         let lag_min = ((self.hop_rate * 60.0 / self.max_bpm).floor() as usize).max(1);
@@ -103,7 +112,10 @@ impl BpmEstimator {
             }
         }
         if best_lag == 0 {
-            return TempoEstimate { bpm: 0.0, confidence: 0.0 };
+            return TempoEstimate {
+                bpm: 0.0,
+                confidence: 0.0,
+            };
         }
 
         let confidence = (best_corr * n as f32 / energy).clamp(0.0, 1.0);
@@ -119,7 +131,7 @@ impl BpmEstimator {
 #[cfg(test)]
 mod tests {
 
-use super::*;
+    use super::*;
 
     const RATE: f32 = 86.13; // fps del hop 512 @44.1k
 
@@ -128,7 +140,10 @@ use super::*;
         let mut est = BpmEstimator::new(RATE);
         // Pulso cada 0.5 s → 43 frames de hop.
         let period = (RATE * 0.5).round() as usize;
-        let mut out = TempoEstimate { bpm: 0.0, confidence: 0.0 };
+        let mut out = TempoEstimate {
+            bpm: 0.0,
+            confidence: 0.0,
+        };
         for i in 0..(RATE as usize * 5) {
             let strength = if i % period == 0 { 1.0 } else { 0.0 };
             out = est.observe(strength);

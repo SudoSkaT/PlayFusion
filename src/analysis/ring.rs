@@ -14,8 +14,8 @@
 //! (`& !usize::MAX << shift` no: usamos wrapping puro con máscara), y las
 //! operaciones son wait-free para ambos lados.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::cell::UnsafeCell;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 /// Anillo de f32 compartido entre dos hilos.
@@ -80,8 +80,7 @@ impl SpScRing {
         let free = self.capacity() - head.wrapping_sub(tail);
         let n = data.len().min(free);
         if n < data.len() {
-            self.dropped
-                .fetch_add(data.len() - n, Ordering::Relaxed);
+            self.dropped.fetch_add(data.len() - n, Ordering::Relaxed);
         }
         // SAFETY: ver invariante del struct — rango [head..head+n) es propiedad
         // exclusiva del productor en este instante.
@@ -126,7 +125,7 @@ unsafe impl Send for SpScRing {}
 #[cfg(test)]
 mod tests {
     use super::*;
-use std::sync::Arc;
+    use std::sync::Arc;
 
     #[test]
     fn push_pop_preserves_order_and_content() {
@@ -232,6 +231,10 @@ use std::sync::Arc;
             );
         }
         assert_eq!(received[TOTAL - 1], (TOTAL - 1) as f32);
-        assert_eq!(ring.dropped(), 0, "el consumidor iba al ritmo del productor");
+        assert_eq!(
+            ring.dropped(),
+            0,
+            "el consumidor iba al ritmo del productor"
+        );
     }
 }

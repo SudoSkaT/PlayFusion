@@ -147,10 +147,7 @@ async fn main() -> anyhow::Result<()> {
             for (k, v) in &stream.headers {
                 req = req.header(k, v);
             }
-            let resp = req
-                .header("Range", "bytes=0-65535")
-                .send()
-                .await?;
+            let resp = req.header("Range", "bytes=0-65535").send().await?;
             let total = resp
                 .headers()
                 .get("content-range")
@@ -162,9 +159,7 @@ async fn main() -> anyhow::Result<()> {
             let bytes = resp.bytes().await?.len();
             println!(
                 "stream resuelto; descarga primer bloque -> status={} bytes={} total={}",
-                status,
-                bytes,
-                total
+                status, bytes, total
             );
         }
         Ok(None) => println!("sin stream resoluble"),
@@ -206,15 +201,30 @@ async fn main() -> anyhow::Result<()> {
                     }
                     if let Some(a) = p.audio_streams.first() {
                         let st = download_status(a.url.clone(), false).await?;
-                        println!("  primer audio con GET plano -> status={} bytes={}", st.0, st.1);
+                        println!(
+                            "  primer audio con GET plano -> status={} bytes={}",
+                            st.0, st.1
+                        );
                         let st2 = download_status(a.url.clone(), true).await?;
-                        println!("  primer audio con GET + UA -> status={} bytes={}", st2.0, st2.1);
+                        println!(
+                            "  primer audio con GET + UA -> status={} bytes={}",
+                            st2.0, st2.1
+                        );
                         let st3 = probe_headers(a.url.clone()).await?;
-                        println!("  primer audio con cabeceras completas -> status={} bytes={}", st3.0, st3.1);
+                        println!(
+                            "  primer audio con cabeceras completas -> status={} bytes={}",
+                            st3.0, st3.1
+                        );
                         let st4 = probe_headers_no_range(a.url.clone()).await?;
-                        println!("  primer audio con cabeceras SIN Range -> status={} bytes={}", st4.0, st4.1);
+                        println!(
+                            "  primer audio con cabeceras SIN Range -> status={} bytes={}",
+                            st4.0, st4.1
+                        );
                         let st5 = probe_headers_range_open(a.url.clone()).await?;
-                        println!("  primer audio con Range abierto 0- -> status={} bytes={}", st5.0, st5.1);
+                        println!(
+                            "  primer audio con Range abierto 0- -> status={} bytes={}",
+                            st5.0, st5.1
+                        );
                     }
                 }
                 Err(e) => println!("[{ct:?}] error: {e}"),

@@ -60,6 +60,9 @@ pub enum BackendEvent {
         related: Vec<Track>,
         /// Letra sincronizada en formato LRC (LRCLIB): única fuente del karaoke.
         synced: Option<String>,
+        /// Generación de la sesión (devuelta por `BackendCommand::LoadRelated`):
+        /// la UI solo aplica la respuesta si sigue siendo la carga en vuelo.
+        generation: u64,
     },
     /// Miniatura resuelta de un track (`key` = identificador estable).
     /// El estado es `Loaded`/`Failed`/`None`; la UI muestra `Loading` desde

@@ -10,8 +10,8 @@ use chrono::NaiveDate;
 use crate::domain::{album::Album, artist::Artist, genre::Genre, source::Source, track::Track};
 use crate::recommendation::{
     acoustic_similarity, metadata_similarity, negative_penalty, popularity_factor, rank,
-    recency_bonus, user_affinity, PlayContext, PlaySignal, SignalKind,
-    TrackAcousticProfile, TrackSignals, UserProfile,
+    recency_bonus, user_affinity, PlayContext, PlaySignal, SignalKind, TrackAcousticProfile,
+    TrackSignals, UserProfile,
 };
 
 // ───────────────────────────────────────────────────────────── helpers
@@ -34,7 +34,13 @@ fn track(id: i64, title: &str, artist: &str, genre: &str, year: i32) -> Track {
     t
 }
 
-fn signal(track_id: i64, kind: SignalKind, ctx: PlayContext, dur_ms: i64, td_ms: i64) -> PlaySignal {
+fn signal(
+    track_id: i64,
+    kind: SignalKind,
+    ctx: PlayContext,
+    dur_ms: i64,
+    td_ms: i64,
+) -> PlaySignal {
     PlaySignal {
         id: track_id,
         track_id,
@@ -65,13 +71,7 @@ fn acoustic(track_id: i64, bpm: f32, bass: f32, high: f32) -> TrackAcousticProfi
     }
 }
 
-fn prof(
-    bass: f32,
-    mid: f32,
-    high: f32,
-    bpm: f32,
-    centroid: f32,
-) -> TrackAcousticProfile {
+fn prof(bass: f32, mid: f32, high: f32, bpm: f32, centroid: f32) -> TrackAcousticProfile {
     TrackAcousticProfile {
         track_id: 0,
         rms_mean: 0.3,
@@ -103,12 +103,32 @@ fn metadata_similarity_favors_shared_artist_and_genre() {
     }
     // El usuario escucha mucho "The Beatles" y "rock".
     let signals = vec![
-        signal(1, SignalKind::Completed, PlayContext::Manual, 200_000, 200_000),
-        signal(1, SignalKind::Completed, PlayContext::Manual, 200_000, 200_000),
-        signal(1, SignalKind::Completed, PlayContext::Manual, 200_000, 200_000),
+        signal(
+            1,
+            SignalKind::Completed,
+            PlayContext::Manual,
+            200_000,
+            200_000,
+        ),
+        signal(
+            1,
+            SignalKind::Completed,
+            PlayContext::Manual,
+            200_000,
+            200_000,
+        ),
+        signal(
+            1,
+            SignalKind::Completed,
+            PlayContext::Manual,
+            200_000,
+            200_000,
+        ),
     ];
     let profile = UserProfile::from_signals(&signals, &tracks, &HashMap::new());
-    assert!(profile.favorite_artists.contains(&"The Beatles".to_string()));
+    assert!(profile
+        .favorite_artists
+        .contains(&"The Beatles".to_string()));
     assert!(profile.favorite_genres.contains(&"rock".to_string()));
 
     let same = metadata_similarity(&same_artist, &profile);
@@ -123,7 +143,13 @@ fn metadata_similarity_uses_decade_when_album_date_known() {
     let mut tracks = HashMap::new();
     tracks.insert(1, user_track.clone());
     let profile = UserProfile::from_signals(
-        &[signal(1, SignalKind::Completed, PlayContext::Manual, 200_000, 200_000)],
+        &[signal(
+            1,
+            SignalKind::Completed,
+            PlayContext::Manual,
+            200_000,
+            200_000,
+        )],
         &tracks,
         &HashMap::new(),
     );
@@ -132,8 +158,7 @@ fn metadata_similarity_uses_decade_when_album_date_known() {
     let same_decade = track(2, "B", "Y", "pop", 1996);
     let other_decade = track(3, "C", "Z", "pop", 2010);
     assert!(
-        metadata_similarity(&same_decade, &profile)
-            > metadata_similarity(&other_decade, &profile),
+        metadata_similarity(&same_decade, &profile) > metadata_similarity(&other_decade, &profile),
         "la década favorita pesa"
     );
 }
@@ -178,8 +203,20 @@ fn user_affinity_prefers_closer_acoustic_match() {
 
     // Usuario: escucha t1 hasta el final (grave, lento).
     let sigs = vec![
-        signal(1, SignalKind::Completed, PlayContext::Manual, 200_000, 200_000),
-        signal(1, SignalKind::Completed, PlayContext::Manual, 200_000, 200_000),
+        signal(
+            1,
+            SignalKind::Completed,
+            PlayContext::Manual,
+            200_000,
+            200_000,
+        ),
+        signal(
+            1,
+            SignalKind::Completed,
+            PlayContext::Manual,
+            200_000,
+            200_000,
+        ),
     ];
     let aps = HashMap::from([
         (1, acoustic(1, 90.0, 0.8, 0.1)),
@@ -252,7 +289,15 @@ fn profile_does_not_treat_play_as_like() {
     // Mil "plays" por AUTOPLAY (sin elección consciente) no deben dominar el
     // perfil ni contar como likes.
     let autoplay: Vec<PlaySignal> = (0..1000)
-        .map(|i| signal(i as i64, SignalKind::Play, PlayContext::Autoplay, 30_000, 200_000))
+        .map(|i| {
+            signal(
+                i as i64,
+                SignalKind::Play,
+                PlayContext::Autoplay,
+                30_000,
+                200_000,
+            )
+        })
         .collect();
     let profile = UserProfile::from_signals(&autoplay, &tracks, &HashMap::new());
     // El peso por contexto autoplay (0.4) es considerablemente menor que un
@@ -266,14 +311,22 @@ fn manual_like_weights_more_than_autoplay_play() {
     let mut tracks = HashMap::new();
     tracks.insert(1, track(1, "A", "Beat", "rock", 2000));
 
-    let like_sig: Vec<PlaySignal> = vec![
-        signal(1, SignalKind::Like, PlayContext::Manual, 200_000, 200_000),
-    ];
+    let like_sig: Vec<PlaySignal> = vec![signal(
+        1,
+        SignalKind::Like,
+        PlayContext::Manual,
+        200_000,
+        200_000,
+    )];
     let like_profile = UserProfile::from_signals(&like_sig, &tracks, &HashMap::new());
 
-    let autoplay_sig: Vec<PlaySignal> = vec![
-        signal(1, SignalKind::Play, PlayContext::Autoplay, 200_000, 200_000),
-    ];
+    let autoplay_sig: Vec<PlaySignal> = vec![signal(
+        1,
+        SignalKind::Play,
+        PlayContext::Autoplay,
+        200_000,
+        200_000,
+    )];
     let autoplay_profile = UserProfile::from_signals(&autoplay_sig, &tracks, &HashMap::new());
 
     assert!(
@@ -288,10 +341,18 @@ fn skip_in_autoplay_does_not_count_as_dislike() {
     tracks.insert(1, track(1, "A", "Beat", "rock", 2000));
 
     // Saltos de autoplay: no son señal negativa significativa.
-    let autoplay_skips: Vec<PlaySignal> =
-        vec![signal(1, SignalKind::Skip, PlayContext::Autoplay, 5_000, 200_000)];
+    let autoplay_skips: Vec<PlaySignal> = vec![signal(
+        1,
+        SignalKind::Skip,
+        PlayContext::Autoplay,
+        5_000,
+        200_000,
+    )];
     let profile = UserProfile::from_signals(&autoplay_skips, &tracks, &HashMap::new());
-    assert_eq!(profile.total_skips, 0, "skip de autoplay no cuenta como disgusto");
+    assert_eq!(
+        profile.total_skips, 0,
+        "skip de autoplay no cuenta como disgusto"
+    );
 }
 
 #[test]
@@ -299,8 +360,13 @@ fn manual_skip_counts_as_negative_signal() {
     let mut tracks = HashMap::new();
     tracks.insert(1, track(1, "A", "Beat", "rock", 2000));
 
-    let manual_skip: Vec<PlaySignal> =
-        vec![signal(1, SignalKind::Skip, PlayContext::Manual, 5_000, 200_000)];
+    let manual_skip: Vec<PlaySignal> = vec![signal(
+        1,
+        SignalKind::Skip,
+        PlayContext::Manual,
+        5_000,
+        200_000,
+    )];
     let profile = UserProfile::from_signals(&manual_skip, &tracks, &HashMap::new());
     assert_eq!(profile.total_skips, 1, "skip manual sí es señal negativa");
 }
@@ -311,12 +377,26 @@ fn completed_plays_build_strong_profile() {
     tracks.insert(1, track(1, "A", "ReplayArtist", "jazz", 2000));
 
     let sigs = vec![
-        signal(1, SignalKind::Completed, PlayContext::Manual, 200_000, 200_000),
-        signal(1, SignalKind::Completed, PlayContext::Manual, 200_000, 200_000),
+        signal(
+            1,
+            SignalKind::Completed,
+            PlayContext::Manual,
+            200_000,
+            200_000,
+        ),
+        signal(
+            1,
+            SignalKind::Completed,
+            PlayContext::Manual,
+            200_000,
+            200_000,
+        ),
         signal(1, SignalKind::Replay, PlayContext::Manual, 200_000, 200_000),
     ];
     let profile = UserProfile::from_signals(&sigs, &tracks, &HashMap::new());
-    assert!(profile.favorite_artists.contains(&"ReplayArtist".to_string()));
+    assert!(profile
+        .favorite_artists
+        .contains(&"ReplayArtist".to_string()));
     assert!(profile.favorite_genres.contains(&"jazz".to_string()));
     assert!(profile.total_replays >= 1);
     assert_eq!(profile.total_completions, 2);
@@ -330,16 +410,46 @@ fn weighted_favorites_dominate_scarce_ones() {
 
     // Escucha MUCHO metal hasta el final y toca clásica una vez (skip autoplay).
     let sigs = vec![
-        signal(1, SignalKind::Completed, PlayContext::Manual, 200_000, 200_000),
-        signal(1, SignalKind::Completed, PlayContext::Manual, 200_000, 200_000),
-        signal(1, SignalKind::Completed, PlayContext::Manual, 200_000, 200_000),
-        signal(1, SignalKind::Completed, PlayContext::Manual, 200_000, 200_000),
-        signal(1, SignalKind::Completed, PlayContext::Manual, 200_000, 200_000),
+        signal(
+            1,
+            SignalKind::Completed,
+            PlayContext::Manual,
+            200_000,
+            200_000,
+        ),
+        signal(
+            1,
+            SignalKind::Completed,
+            PlayContext::Manual,
+            200_000,
+            200_000,
+        ),
+        signal(
+            1,
+            SignalKind::Completed,
+            PlayContext::Manual,
+            200_000,
+            200_000,
+        ),
+        signal(
+            1,
+            SignalKind::Completed,
+            PlayContext::Manual,
+            200_000,
+            200_000,
+        ),
+        signal(
+            1,
+            SignalKind::Completed,
+            PlayContext::Manual,
+            200_000,
+            200_000,
+        ),
         signal(2, SignalKind::Play, PlayContext::Autoplay, 30_000, 200_000),
     ];
     let profile = UserProfile::from_signals(&sigs, &tracks, &HashMap::new());
     assert!(
-        profile.favorite_genres.get(0).map(|s| s.as_str()) == Some("metal"),
+        profile.favorite_genres.first().map(|s| s.as_str()) == Some("metal"),
         "el género dominante encabeza el perfil"
     );
     // La clásica (1 play de autoplay) queda detrás del metal (5 completas).
@@ -369,9 +479,27 @@ async fn rank_places_matching_track_above_mismatch() {
 
     // Usuario consume rock de "Beat".
     let sigs = vec![
-        signal(1, SignalKind::Completed, PlayContext::Manual, 200_000, 200_000),
-        signal(1, SignalKind::Completed, PlayContext::Manual, 200_000, 200_000),
-        signal(1, SignalKind::Completed, PlayContext::Manual, 200_000, 200_000),
+        signal(
+            1,
+            SignalKind::Completed,
+            PlayContext::Manual,
+            200_000,
+            200_000,
+        ),
+        signal(
+            1,
+            SignalKind::Completed,
+            PlayContext::Manual,
+            200_000,
+            200_000,
+        ),
+        signal(
+            1,
+            SignalKind::Completed,
+            PlayContext::Manual,
+            200_000,
+            200_000,
+        ),
     ];
     let profile = UserProfile::from_signals(&sigs, &tracks, &HashMap::new());
     let aps = HashMap::new();
@@ -402,8 +530,20 @@ async fn rank_penalizes_frequently_skipped_track() {
     // Usuario escucha a "Beat" mucho (afinidad alta por artista), pero el track
     // #1 tiene MUCHOS skips manuales ⇒ queda penalizado frente al #2.
     let sigs = vec![
-        signal(1, SignalKind::Completed, PlayContext::Manual, 200_000, 200_000),
-        signal(1, SignalKind::Completed, PlayContext::Manual, 200_000, 200_000),
+        signal(
+            1,
+            SignalKind::Completed,
+            PlayContext::Manual,
+            200_000,
+            200_000,
+        ),
+        signal(
+            1,
+            SignalKind::Completed,
+            PlayContext::Manual,
+            200_000,
+            200_000,
+        ),
     ];
     let profile = UserProfile::from_signals(&sigs, &tracks, &HashMap::new());
     let aps = HashMap::new();
@@ -417,8 +557,20 @@ async fn rank_penalizes_frequently_skipped_track() {
     }];
     let mut signals_map = HashMap::new();
     // Track 1: 5 plays con 4 negativas. Track 2: sin señales.
-    signals_map.insert(1, TrackSignals { plays: 5, negative: 4 });
-    signals_map.insert(2, TrackSignals { plays: 0, negative: 0 });
+    signals_map.insert(
+        1,
+        TrackSignals {
+            plays: 5,
+            negative: 4,
+        },
+    );
+    signals_map.insert(
+        2,
+        TrackSignals {
+            plays: 0,
+            negative: 0,
+        },
+    );
 
     let candidates: Vec<Track> = vec![tracks[&1].clone(), tracks[&2].clone()];
     let ranked = rank(&candidates, &profile, &hist, &aps, &signals_map).await;
@@ -433,9 +585,27 @@ async fn rank_distinguishes_popular_from_recommended() {
     tracks.insert(2, track(2, "Popular", "PopStar", "pop", 2020));
 
     let sigs = vec![
-        signal(1, SignalKind::Completed, PlayContext::Manual, 200_000, 200_000),
-        signal(1, SignalKind::Completed, PlayContext::Manual, 200_000, 200_000),
-        signal(1, SignalKind::Completed, PlayContext::Manual, 200_000, 200_000),
+        signal(
+            1,
+            SignalKind::Completed,
+            PlayContext::Manual,
+            200_000,
+            200_000,
+        ),
+        signal(
+            1,
+            SignalKind::Completed,
+            PlayContext::Manual,
+            200_000,
+            200_000,
+        ),
+        signal(
+            1,
+            SignalKind::Completed,
+            PlayContext::Manual,
+            200_000,
+            200_000,
+        ),
     ];
     let profile = UserProfile::from_signals(&sigs, &tracks, &HashMap::new());
     let aps = HashMap::new();
@@ -509,9 +679,18 @@ fn playlist_add_is_positive_signal() {
 fn rec_click_counts_as_play_intent_but_not_like() {
     let mut tracks = HashMap::new();
     tracks.insert(1, track(1, "A", "Beat", "rock", 2000));
-    let click = signal(1, SignalKind::RecClick, PlayContext::Recommendation, 0, 200_000);
+    let click = signal(
+        1,
+        SignalKind::RecClick,
+        PlayContext::Recommendation,
+        0,
+        200_000,
+    );
     let profile = UserProfile::from_signals(&[click], &tracks, &HashMap::new());
-    assert_eq!(profile.total_plays, 1, "un click en recomendación es un intento");
+    assert_eq!(
+        profile.total_plays, 1,
+        "un click en recomendación es un intento"
+    );
     assert_eq!(profile.total_likes, 0, "pero no es un like");
 }
 
@@ -529,9 +708,27 @@ async fn acoustic_features_steer_ranking_when_metadata_is_tied() {
 
     // Usuario: escucha t1 (grave, lento) hasta el final muchas veces.
     let sigs = vec![
-        signal(1, SignalKind::Completed, PlayContext::Manual, 200_000, 200_000),
-        signal(1, SignalKind::Completed, PlayContext::Manual, 200_000, 200_000),
-        signal(1, SignalKind::Completed, PlayContext::Manual, 200_000, 200_000),
+        signal(
+            1,
+            SignalKind::Completed,
+            PlayContext::Manual,
+            200_000,
+            200_000,
+        ),
+        signal(
+            1,
+            SignalKind::Completed,
+            PlayContext::Manual,
+            200_000,
+            200_000,
+        ),
+        signal(
+            1,
+            SignalKind::Completed,
+            PlayContext::Manual,
+            200_000,
+            200_000,
+        ),
     ];
     let aps = HashMap::from([
         (1, acoustic(1, 90.0, 0.8, 0.1)),
@@ -554,5 +751,8 @@ async fn acoustic_features_steer_ranking_when_metadata_is_tied() {
     let candidates: Vec<Track> = vec![t1.clone(), t2.clone()];
     let ranked = rank(&candidates, &profile, &hist, &aps, &signals_map).await;
     // Aunque ambos comparten artista/género, el acústico similar vence.
-    assert_eq!(ranked[0].track_id, 1, "el sonido parecido gana sobre metadata empatada");
+    assert_eq!(
+        ranked[0].track_id, 1,
+        "el sonido parecido gana sobre metadata empatada"
+    );
 }

@@ -80,8 +80,7 @@ impl SettingsForm {
 /// Estado del proxy para el pie del formulario: verdura o guía si no hay.
 fn proxy_line(form: &ConfigForm) -> String {
     if form.proxy.is_empty() {
-        "Proxy: no configurado (HTTP_PROXY evita cortes de YouTube por IP)"
-            .to_string()
+        "Proxy: no configurado (HTTP_PROXY evita cortes de YouTube por IP)".to_string()
     } else {
         format!("Proxy activo: {}", form.proxy)
     }

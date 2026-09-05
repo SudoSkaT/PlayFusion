@@ -39,9 +39,18 @@ fn parse_sql_datetime(s: &str) -> Option<f64> {
     let year = s[0..4].parse::<f64>().ok()?;
     let month = s[5..7].parse::<f64>().ok()?;
     let day = s[8..10].parse::<f64>().ok()?;
-    let hour = s.get(11..13).and_then(|x| x.parse::<f64>().ok()).unwrap_or(0.0);
-    let minute = s.get(14..16).and_then(|x| x.parse::<f64>().ok()).unwrap_or(0.0);
-    let second = s.get(17..19).and_then(|x| x.parse::<f64>().ok()).unwrap_or(0.0);
+    let hour = s
+        .get(11..13)
+        .and_then(|x| x.parse::<f64>().ok())
+        .unwrap_or(0.0);
+    let minute = s
+        .get(14..16)
+        .and_then(|x| x.parse::<f64>().ok())
+        .unwrap_or(0.0);
+    let second = s
+        .get(17..19)
+        .and_then(|x| x.parse::<f64>().ok())
+        .unwrap_or(0.0);
 
     // Aproximación: días desde epoch (ignora timezone)
     let days = (year - 1970.0) * 365.25

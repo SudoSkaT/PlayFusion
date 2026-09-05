@@ -140,7 +140,10 @@ mod tests {
         let cfg = PreloadConfig::default();
         let long = Duration::from_secs(200);
 
-        assert!(!should_preload(Duration::ZERO, Some(long), true, &cfg), "lejos del final");
+        assert!(
+            !should_preload(Duration::ZERO, Some(long), true, &cfg),
+            "lejos del final"
+        );
         assert!(
             should_preload(long - Duration::from_secs(30), Some(long), true, &cfg),
             "en la ventana del lead time"
@@ -149,15 +152,34 @@ mod tests {
             should_preload(long - Duration::from_secs(5), Some(long), true, &cfg),
             "dentro del último tramo"
         );
-        assert!(!should_preload(Duration::ZERO, Some(long), false, &cfg), "sin siguiente");
-        assert!(!should_preload(Duration::ZERO, None, true, &cfg), "sin duración");
         assert!(
-            !should_preload(Duration::ZERO, Some(long), true, &PreloadConfig { enabled: false, ..Default::default() }),
+            !should_preload(Duration::ZERO, Some(long), false, &cfg),
+            "sin siguiente"
+        );
+        assert!(
+            !should_preload(Duration::ZERO, None, true, &cfg),
+            "sin duración"
+        );
+        assert!(
+            !should_preload(
+                Duration::ZERO,
+                Some(long),
+                true,
+                &PreloadConfig {
+                    enabled: false,
+                    ..Default::default()
+                }
+            ),
             "apagado"
         );
         // Pista más corta que el lead time: siempre estaría "cerca del final",
         // pero no hay margen útil → no pre-cargar.
-        assert!(!should_preload(Duration::ZERO, Some(Duration::from_secs(10)), true, &cfg));
+        assert!(!should_preload(
+            Duration::ZERO,
+            Some(Duration::from_secs(10)),
+            true,
+            &cfg
+        ));
     }
 
     #[tokio::test(start_paused = true)]

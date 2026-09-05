@@ -29,8 +29,8 @@ impl FluxAnalyzer {
             return 0.0;
         }
         let mut sum = 0.0f32;
-        for i in 0..mags.len() {
-            let d = mags[i] - self.prev[i];
+        for (m, p) in mags.iter().zip(self.prev.iter()) {
+            let d = m - p;
             if d > 0.0 {
                 sum += d;
             }
@@ -76,12 +76,18 @@ impl OnsetDetector {
         }
         if self.history.len() < self.window / 2 {
             // Sin historia suficiente: calibrando, nunca disparar.
-            return OnsetOutcome { strength: 0.0, triggered: false };
+            return OnsetOutcome {
+                strength: 0.0,
+                triggered: false,
+            };
         }
         let mean = self.history.iter().sum::<f32>() / self.history.len() as f32;
         let excess = flux - mean - self.delta;
         if excess <= 0.0 {
-            return OnsetOutcome { strength: 0.0, triggered: false };
+            return OnsetOutcome {
+                strength: 0.0,
+                triggered: false,
+            };
         }
         // Normalización robusta: escala = media local + delta (el propio
         // umbral). Un pico del doble del umbral satura hacia 1.

@@ -33,10 +33,9 @@ pub fn build_engines(
     // Análisis de audio opcional: un runtime por construcción de motores; su
     // Drop detiene el hilo al reconstruirse (ajustes). El FeatureBus viaja
     // hacia fuera para los consumidores (visualización Fase 7).
-    let analysis = config
-        .flags
-        .audio_analysis
-        .then(|| crate::analysis::AnalysisRuntime::spawn(crate::analysis::AnalysisConfig::default()));
+    let analysis = config.flags.audio_analysis.then(|| {
+        crate::analysis::AnalysisRuntime::spawn(crate::analysis::AnalysisConfig::default())
+    });
     let features = analysis.as_ref().map(|rt| rt.bus());
 
     // Salida local para rodio. Si no hay dispositivo de audio, el backend

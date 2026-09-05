@@ -13,15 +13,13 @@ use chrono::Datelike;
 use std::collections::HashMap;
 
 use crate::domain::track::Track;
-use crate::recommendation::signals::{signal_weight, is_meaningful_negative, PlaySignal, SignalKind};
+use crate::recommendation::signals::{
+    is_meaningful_negative, signal_weight, PlaySignal, SignalKind,
+};
 use crate::recommendation::types::TrackAcousticProfile;
 
 /// Cómo agregar la preferencia por clave (artista/género/etc.).
-fn accumulate(
-    counts: &mut HashMap<String, f32>,
-    keys: &[String],
-    weight: f32,
-) {
+fn accumulate(counts: &mut HashMap<String, f32>, keys: &[String], weight: f32) {
     for k in keys {
         *counts.entry(k.clone()).or_insert(0.0) += weight;
     }
@@ -30,10 +28,18 @@ fn accumulate(
 fn top_n(counts: &HashMap<String, f32>, n: usize) -> Vec<String> {
     let mut entries: Vec<_> = counts.iter().collect();
     entries.sort_by(|a, b| b.1.partial_cmp(a.1).unwrap_or(std::cmp::Ordering::Equal));
-    entries.into_iter().take(n).map(|(k, _)| k.clone()).collect()
+    entries
+        .into_iter()
+        .take(n)
+        .map(|(k, _)| k.clone())
+        .collect()
 }
 
-fn add_track_counts(profile: &mut crate::recommendation::types::UserProfile, track: &Track, weight: f32) {
+fn add_track_counts(
+    profile: &mut crate::recommendation::types::UserProfile,
+    track: &Track,
+    weight: f32,
+) {
     let artist_keys: Vec<String> = track.artists.iter().map(|a| a.name.clone()).collect();
     let genre_keys: Vec<String> = track.genres.iter().map(|g| g.name.clone()).collect();
     accumulate(&mut profile._artist_w, &artist_keys, weight);

@@ -185,9 +185,7 @@ impl QueueManager {
         if !self.order_is_valid() {
             self.reshuffle(current);
         }
-        let pos_in_order = current.and_then(|idx| {
-            self.order.iter().position(|&i| i == idx)
-        });
+        let pos_in_order = current.and_then(|idx| self.order.iter().position(|&i| i == idx));
         let n = self.order.len();
         let next_pos = match (pos_in_order, forward) {
             (Some(p), true) => match self.repeat {
@@ -217,12 +215,7 @@ impl QueueManager {
     /// son recientes (cola muy pequeña) cae al primer candidato para no
     /// bloquear la reproducción: el anti-bucle es de "máximo esfuerzo" cuando
     /// no hay alternativas.
-    fn first_unrecent(
-        &self,
-        start: usize,
-        forward: bool,
-        n: usize,
-    ) -> usize {
+    fn first_unrecent(&self, start: usize, forward: bool, n: usize) -> usize {
         let fallback = start;
         for k in 0..n {
             let step = if forward { k } else { n - k };
@@ -243,8 +236,7 @@ impl QueueManager {
 
     /// La permutación cubre exactamente los índices de la cola vigente.
     fn order_is_valid(&self) -> bool {
-        self.order.len() == self.tracks.len()
-            && self.order.iter().all(|&i| i < self.tracks.len())
+        self.order.len() == self.tracks.len() && self.order.iter().all(|&i| i < self.tracks.len())
     }
 
     /// Genera una permutación nueva con el track ancla en primera posición.
@@ -318,7 +310,11 @@ mod tests {
         q.mark_played("b");
         assert_eq!(id(&q.pick(false, None)), "a");
         q.mark_played("a");
-        assert_eq!(id(&q.pick(false, None)), "c", "desde la primera, a la última");
+        assert_eq!(
+            id(&q.pick(false, None)),
+            "c",
+            "desde la primera, a la última"
+        );
     }
 
     #[test]
@@ -348,7 +344,11 @@ mod tests {
         q.mark_played("a");
         let _ = q.pick(true, None);
         let _ = q.pick(true, None);
-        assert_eq!(q.last_played(), Some("a"), "solo mark_played mueve el ancla");
+        assert_eq!(
+            q.last_played(),
+            Some("a"),
+            "solo mark_played mueve el ancla"
+        );
     }
 
     // -------------------------------------------------------------- repeat
@@ -376,7 +376,9 @@ mod tests {
         let mut visited = Vec::new();
         let mut anchor = Some(String::from("c"));
         for _ in 0..ids.len() {
-            let next = q.pick(true, anchor.as_deref()).expect("permutación completa");
+            let next = q
+                .pick(true, anchor.as_deref())
+                .expect("permutación completa");
             visited.push(next.identifier());
             anchor = Some(visited.last().unwrap().clone());
         }
@@ -441,7 +443,11 @@ mod tests {
         let mut q = queue(&["a", "b", "c"]);
         q.mark_played("c");
         q.mark_played("b");
-        assert_eq!(id(&q.pick(true, Some("b"))), "a", "salta la recién escuchada c");
+        assert_eq!(
+            id(&q.pick(true, Some("b"))),
+            "a",
+            "salta la recién escuchada c"
+        );
     }
 
     #[test]
@@ -452,7 +458,9 @@ mod tests {
         let mut anchor: Option<String> = None;
         let mut prev: Option<String> = None;
         for _ in 0..4 {
-            let t = q.pick(true, anchor.as_deref()).expect("cola con alternativas");
+            let t = q
+                .pick(true, anchor.as_deref())
+                .expect("cola con alternativas");
             if let Some(p) = &prev {
                 assert_ne!(t.identifier(), *p, "no se repite la canción anterior");
             }
@@ -469,7 +477,9 @@ mod tests {
         let mut q = queue(&["a", "b"]);
         q.mark_played("a");
         q.mark_played("b");
-        let t = q.pick(true, Some("b")).expect("nunca None con cola no vacía");
+        let t = q
+            .pick(true, Some("b"))
+            .expect("nunca None con cola no vacía");
         assert_eq!(t.identifier(), "a");
     }
 

@@ -171,7 +171,11 @@ mod tests {
         assert_eq!(b.state(now), CircuitState::Healthy);
         assert!(b.allow_request(now));
         b.on_failure(now);
-        assert_eq!(b.state(now), CircuitState::Degraded, "bajo umbral: degradado");
+        assert_eq!(
+            b.state(now),
+            CircuitState::Degraded,
+            "bajo umbral: degradado"
+        );
         assert!(b.allow_request(now), "degradado NO bloquea");
         b.on_failure(now);
         b.on_failure(now);

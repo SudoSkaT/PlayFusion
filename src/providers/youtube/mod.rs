@@ -28,7 +28,9 @@ pub use provider::{
 };
 
 use crate::catalog::CatalogProvider;
-use crate::domain::{album::Album, artist::Artist, source::Source, stream::StreamResolution, track::Track};
+use crate::domain::{
+    album::Album, artist::Artist, source::Source, stream::StreamResolution, track::Track,
+};
 use crate::media::failure::{FailureCategory, ResolutionError};
 use crate::media::provider::{ResolveContext, StreamProvider};
 use crate::media::resolver::StreamValidator;
@@ -38,8 +40,7 @@ use crate::media::resolver::StreamValidator;
 /// constantes internas). Las URLs de googlevideo viven horas; aquí se prefiere
 /// el límite prudente y la verificación en vivo hace el resto.
 fn resolution_ttl() -> chrono::Duration {
-    chrono::Duration::from_std(Duration::from_secs(20 * 60))
-        .unwrap_or(chrono::Duration::MAX)
+    chrono::Duration::from_std(Duration::from_secs(20 * 60)).unwrap_or(chrono::Duration::MAX)
 }
 
 /// Adaptador completo de YouTube: un solo tipo que sirve catálogo, streaming
@@ -249,15 +250,15 @@ mod tests {
             reason: Reason::AgeRestricted,
             msg: "sign in to confirm".into(),
         };
-        assert_eq!(
-            classify_rp_error(&Rp::Extraction(unavail)),
-            C::Unsupported
-        );
+        assert_eq!(classify_rp_error(&Rp::Extraction(unavail)), C::Unsupported);
         let not_found = Ex::NotFound {
             id: "abc".into(),
             msg: "no existe".into(),
         };
-        assert_eq!(classify_rp_error(&Rp::Extraction(not_found)), C::Unsupported);
+        assert_eq!(
+            classify_rp_error(&Rp::Extraction(not_found)),
+            C::Unsupported
+        );
 
         // Datos inválidos / firma no deobfuscable / botguard caído.
         assert_eq!(

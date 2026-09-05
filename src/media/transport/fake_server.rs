@@ -164,8 +164,7 @@ async fn serve(
             let total = data.len() as u64;
             if start < total {
                 let end2 = end.min(total - 1);
-                let slice =
-                    data[start as usize..=(end2 as usize)].to_vec();
+                let slice = data[start as usize..=(end2 as usize)].to_vec();
                 (
                     "HTTP/1.1 206 Partial Content",
                     format!(

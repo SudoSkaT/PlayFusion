@@ -207,11 +207,7 @@ impl StreamResolution {
         }
         if !is_http_uri(&self.uri) {
             return Err(StreamValidationError::UnsupportedScheme(
-                self.uri
-                    .split(':')
-                    .next()
-                    .unwrap_or_default()
-                    .to_string(),
+                self.uri.split(':').next().unwrap_or_default().to_string(),
             ));
         }
         Ok(())
@@ -244,7 +240,10 @@ mod tests {
 
     #[test]
     fn quality_classifies_bitrate_bands() {
-        assert_eq!(Quality::from_bitrate(Some(600_000)), Some(Quality::Lossless));
+        assert_eq!(
+            Quality::from_bitrate(Some(600_000)),
+            Some(Quality::Lossless)
+        );
         assert_eq!(Quality::from_bitrate(Some(256_000)), Some(Quality::High));
         assert_eq!(
             Quality::from_bitrate(Some(128_000)),

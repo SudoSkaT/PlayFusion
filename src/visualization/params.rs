@@ -99,7 +99,10 @@ impl Default for ParameterMapper {
 
 impl ParameterMapper {
     pub fn new(cfg: MapperConfig) -> Self {
-        Self { cfg, anchors: band_anchor_positions() }
+        Self {
+            cfg,
+            anchors: band_anchor_positions(),
+        }
     }
 
     pub fn config(&self) -> &MapperConfig {
@@ -123,22 +126,23 @@ impl ParameterMapper {
 
         // Relleno entre anclas: interpolación smoothstep (sin allocs).
         let mut bars = [0.0f32; VISUAL_BARS];
-        for i in 0..self.anchors[0] {
-            bars[i] = anchors_v[0] * smoothstep(i as f32 / self.anchors[0].max(1) as f32);
+        for (i, bar) in bars.iter_mut().take(self.anchors[0]).enumerate() {
+            *bar = anchors_v[0] * smoothstep(i as f32 / self.anchors[0].max(1) as f32);
         }
         for seg in 0..4 {
             let a = self.anchors[seg];
             let b = self.anchors[seg + 1];
-            for i in a..b {
+            for (i, bar) in bars[a..b].iter_mut().enumerate() {
+                let i = a + i;
                 let t = (i - a) as f32 / (b - a).max(1) as f32;
-                bars[i] = anchors_v[seg] + (anchors_v[seg + 1] - anchors_v[seg]) * smoothstep(t);
+                *bar = anchors_v[seg] + (anchors_v[seg + 1] - anchors_v[seg]) * smoothstep(t);
             }
         }
-        for i in self.anchors[4]..VISUAL_BARS {
+        for (i, bar) in bars.iter_mut().enumerate().skip(self.anchors[4]) {
             // Cauda de agudos: decae hacia el borde derecho.
-            let t = (i - self.anchors[4] + 1) as f32
-                / (VISUAL_BARS - self.anchors[4]).max(1) as f32;
-            bars[i] = anchors_v[4] * (1.0 - smoothstep(t));
+            let t =
+                (i - self.anchors[4] + 1) as f32 / (VISUAL_BARS - self.anchors[4]).max(1) as f32;
+            *bar = anchors_v[4] * (1.0 - smoothstep(t));
         }
 
         // Nivel global con boost de graves.
@@ -152,9 +156,13 @@ impl ParameterMapper {
 
         let intensity = shaped(f.high * 0.8 + f.spectral_flux * 0.4, &self.cfg);
         let turbulence = (f.spectral_flux * self.cfg.turbulence_gain).clamp(0.0, 1.0);
-        let pulse_kick = (f.onset.max(if f.beat { 1.0 } else { 0.0 }) * self.cfg.beat_gain)
-            .clamp(0.0, 1.0);
-        let phase_rate = if f.bpm > 0.0 { f.bpm / 60.0 } else { self.cfg.fallback_phase_rate };
+        let pulse_kick =
+            (f.onset.max(if f.beat { 1.0 } else { 0.0 }) * self.cfg.beat_gain).clamp(0.0, 1.0);
+        let phase_rate = if f.bpm > 0.0 {
+            f.bpm / 60.0
+        } else {
+            self.cfg.fallback_phase_rate
+        };
 
         VisualParameters {
             bars,
@@ -202,7 +210,10 @@ mod tests {
 
     #[test]
     fn all_outputs_stay_in_unit_range() {
-        let mapper = ParameterMapper::new(MapperConfig { sensitivity: 4.0, ..Default::default() });
+        let mapper = ParameterMapper::new(MapperConfig {
+            sensitivity: 4.0,
+            ..Default::default()
+        });
         let extremes = features([1.0; 5], 1.0, 1.0, true, 200.0);
         let p = mapper.map(&extremes);
         for v in p.bars.iter() {
@@ -236,7 +247,10 @@ mod tests {
     fn bpm_drives_phase_rate_and_fallback_applies_without_it() {
         let mapper = ParameterMapper::default();
         let with_bpm = mapper.map(&features([0.5; 5], 0.0, 0.0, false, 120.0));
-        assert!((with_bpm.phase_rate - 2.0).abs() < 1e-4, "120 BPM = 2 ciclos/s");
+        assert!(
+            (with_bpm.phase_rate - 2.0).abs() < 1e-4,
+            "120 BPM = 2 ciclos/s"
+        );
 
         let without = mapper.map(&features([0.5; 5], 0.0, 0.0, false, 0.0));
         assert!((without.phase_rate - MapperConfig::default().fallback_phase_rate).abs() < 1e-6);

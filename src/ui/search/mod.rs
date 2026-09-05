@@ -14,6 +14,8 @@ use crate::domain::track::Track;
 use crate::infrastructure::storage::TrackListeningStats;
 use crate::ui::widgets::search_results;
 
+use super::navigation::ListSelection;
+
 #[derive(Debug, Default)]
 pub struct SearchState {
     pub input: Vec<char>,
@@ -82,25 +84,25 @@ impl SearchState {
     }
 
     pub fn select_next(&mut self) {
-        let n = self.results.len();
-        if n == 0 {
-            return;
-        }
-        let next = self.list_state.selected().map(|i| (i + 1) % n).unwrap_or(0);
-        self.list_state.select(Some(next));
+        self.step(true);
     }
 
     pub fn select_prev(&mut self) {
-        let n = self.results.len();
-        if n == 0 {
-            return;
-        }
-        let prev = self
-            .list_state
-            .selected()
-            .map(|i| (i + n - 1) % n)
-            .unwrap_or(0);
-        self.list_state.select(Some(prev));
+        self.step(false);
+    }
+}
+
+impl super::navigation::ListSelection for SearchState {
+    fn list_len(&self) -> usize {
+        self.results.len()
+    }
+
+    fn cursor(&self) -> Option<usize> {
+        self.list_state.selected()
+    }
+
+    fn set_cursor(&mut self, index: Option<usize>) {
+        self.list_state.select(index);
     }
 }
 

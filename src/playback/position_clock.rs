@@ -26,6 +26,20 @@ pub struct PendingSeek {
     pub target: Duration,
 }
 
+/// Limita un objetivo de seek relativo a los límites reales del audio
+/// (spec §15): nunca negativo ni más allá de `duration` (si es conocida).
+///
+/// `base` es la posición actual y `delta` el desplazamiento en segundos
+/// (negativo = retroceder). Único sitio que acota el salto, compartido por la
+/// línea de tiempo (vista Metadata) y el keybinding `Left`/`Right`.
+pub fn clamp_seek_target(base: Duration, delta: i64, duration: Option<Duration>) -> Duration {
+    let target = (base.as_secs() as i64).saturating_add(delta).max(0) as u64;
+    match duration {
+        Some(total) if !total.is_zero() && Duration::from_secs(target) > total => total,
+        _ => Duration::from_secs(target),
+    }
+}
+
 /// Qué cambió al incorporar una muestra (para que los consumidores reaccionen).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClockEvent {
@@ -159,8 +173,9 @@ impl PositionClock {
         now: Instant,
     ) -> Duration {
         let value = if playing && !stalled {
-            self.synced_at
-                .map_or(self.position, |t| self.position + now.saturating_duration_since(t))
+            self.synced_at.map_or(self.position, |t| {
+                self.position + now.saturating_duration_since(t)
+            })
         } else {
             self.position
         };
@@ -203,7 +218,10 @@ mod tests {
     fn monotonic_guard_ignores_spurious_resets() {
         let mut c = PositionClock::new();
         let now = t0();
-        assert_eq!(c.update(Some("a"), Duration::from_secs(10), now), Some(ClockEvent::NewTrack));
+        assert_eq!(
+            c.update(Some("a"), Duration::from_secs(10), now),
+            Some(ClockEvent::NewTrack)
+        );
         // Reinicio espurio del motor: ignorado.
         assert_eq!(c.update(Some("a"), Duration::ZERO, now), None);
         assert_eq!(c.position(), Duration::from_secs(10));
@@ -231,7 +249,10 @@ mod tests {
         let mut c = PositionClock::new();
         let now = t0();
         c.update(Some("a"), Duration::from_secs(5), now);
-        assert_eq!(c.update(None, Duration::ZERO, now), Some(ClockEvent::Cleared));
+        assert_eq!(
+            c.update(None, Duration::ZERO, now),
+            Some(ClockEvent::Cleared)
+        );
         assert_eq!(c.position(), Duration::ZERO);
         assert_eq!(c.track_key(), None);
         // Un segundo vacío consecutivo no repite el evento.
@@ -301,7 +322,11 @@ mod tests {
         // Simula una muestra llegada mucho después CON la misma posición
         // (ticker durante pausa): el re-anclaje evita saltar 10 minutos.
         let later = Instant::now();
-        c.update(Some("a"), Duration::from_secs(50), later + Duration::from_secs(600));
+        c.update(
+            Some("a"),
+            Duration::from_secs(50),
+            later + Duration::from_secs(600),
+        );
         let snap = c.snapshot(false, false, Some(Duration::from_secs(200)), Instant::now());
         assert_eq!(snap, Duration::from_secs(50), "pausa larga no contamina");
     }
@@ -356,6 +381,50 @@ mod tests {
         c.begin_seek(Duration::from_secs(5));
         c.cancel_pending_seek();
         assert!(c.pending_seek().is_none());
-        assert_eq!(c.position(), Duration::from_secs(80), "el audio nunca se movió");
+        assert_eq!(
+            c.position(),
+            Duration::from_secs(80),
+            "el audio nunca se movió"
+        );
+    }
+
+    #[test]
+    fn clamp_seek_target_never_goes_below_zero() {
+        assert_eq!(
+            clamp_seek_target(Duration::from_secs(5), -10, None),
+            Duration::ZERO,
+            "retroceder desde 5s diez segundos siempre produce 0, nunca underflow"
+        );
+        assert_eq!(clamp_seek_target(Duration::ZERO, -1, None), Duration::ZERO);
+    }
+
+    #[test]
+    fn clamp_seek_target_clamps_to_known_duration() {
+        assert_eq!(
+            clamp_seek_target(Duration::from_secs(190), 10, Some(Duration::from_secs(200))),
+            Duration::from_secs(200),
+            "no salta más allá de la duración"
+        );
+        // Sin duración conocida se entrega el objetivo tal cual.
+        assert_eq!(
+            clamp_seek_target(Duration::from_secs(190), 10, None),
+            Duration::from_secs(200)
+        );
+    }
+
+    #[test]
+    fn clamp_seek_target_keeps_deltas_inside_the_range() {
+        assert_eq!(
+            clamp_seek_target(Duration::from_secs(100), 10, Some(Duration::from_secs(200))),
+            Duration::from_secs(110)
+        );
+        assert_eq!(
+            clamp_seek_target(
+                Duration::from_secs(100),
+                -10,
+                Some(Duration::from_secs(200))
+            ),
+            Duration::from_secs(90)
+        );
     }
 }

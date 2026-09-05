@@ -61,15 +61,14 @@ async fn cap_of(
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(
-            |_| "rustypipe=warn".into(),
-        ))
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "rustypipe=warn".into()),
+        )
         .with_target(false)
         .init();
 
-    let rp = RustyPipe::builder()
-        .storage_dir("data/youtube")
-        .build()?;
+    let rp = RustyPipe::builder().storage_dir("data/youtube").build()?;
     let video_id = "kM0Fpbz0W8U";
 
     let http = reqwest::Client::builder()
@@ -93,7 +92,8 @@ async fn main() -> anyhow::Result<()> {
                 // Candidato mp4 con mayor bitrate (mismo criterio del provider).
                 let mut best: Option<&rustypipe::model::AudioStream> = None;
                 for s in &p.audio_streams {
-                    let mp4 = s.url.contains("mime=audio%2Fmp4") || s.url.contains("mime=audio/mp4");
+                    let mp4 =
+                        s.url.contains("mime=audio%2Fmp4") || s.url.contains("mime=audio/mp4");
                     let better = match best {
                         None => true,
                         Some(b) => {
@@ -120,7 +120,10 @@ async fn main() -> anyhow::Result<()> {
                     "itag={} bitrate={} c={c_ctx} clen={}",
                     s.itag,
                     s.bitrate,
-                    url.split("clen=").nth(1).and_then(|v| v.split('&').next()).unwrap_or("?")
+                    url.split("clen=")
+                        .nth(1)
+                        .and_then(|v| v.split('&').next())
+                        .unwrap_or("?")
                 );
                 let clen: u64 = url
                     .split("clen=")
